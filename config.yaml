@@ -1,0 +1,158 @@
+# =============================================================================
+# Thermal Face Detection - Configuration File
+# =============================================================================
+# This file configures training and model parameters.
+# The pipeline will automatically optimize batch sizes based on your GPU.
+
+# Data Configuration
+# -----------------------------------------------------------------------------
+data:
+  # Directory structure (strict - do not change unless restructuring project)
+  data_dir: "data"
+  thermal_dir: "data/S1"
+  output_dir: "outputs"
+  log_dir: "log"
+  
+  # Image processing
+  image_size: [256, 256]        # Resize thermal images to this size
+  num_classes: 10                # Background + 9 facial regions
+
+# Training Configuration
+# -----------------------------------------------------------------------------
+training:
+  # Basic training parameters
+  learning_rate: 0.0001          # Initial learning rate
+  num_epochs: 100                # Number of training epochs
+  
+  # Hardware optimization (auto-adjusted based on GPU)
+  # These are baseline values for GTX 1660 Ti (6GB)
+  # The pipeline will automatically scale up for better GPUs
+  batch_size_unet: 8             # U-Net batch size (lightest model)
+  batch_size_transunet: 6        # TransUNet batch size
+  batch_size_swin: 6             # Swin-UNet++ batch size
+  num_workers: 4                 # Data loading workers (auto-adjusted)
+  
+  # Memory management
+  pin_memory: true               # Pin memory for faster data transfer
+  persistent_workers: true       # Keep workers alive between epochs
+  mixed_precision: true          # CRITICAL for 6GB GPUs - enables FP16
+  gradient_clip_val: 1.0         # Gradient clipping for stability
+  
+  # Validation
+  val_split: 0.2                 # Validation set size (20%)
+  random_seed: 42                # Random seed for reproducibility
+
+# Model-Specific Settings
+# -----------------------------------------------------------------------------
+models:
+  unet:
+    enabled: true                # Train U-Net
+    description: "Fast, lightweight CNN-based architecture"
+    
+  transunet:
+    enabled: true                # Train TransUNet
+    description: "Hybrid CNN-Transformer architecture"
+    
+  swin_unet:
+    enabled: true                # Train Swin-UNet++
+    description: "Advanced Transformer with nested skip connections"
+
+# Loss Function Configuration
+# -----------------------------------------------------------------------------
+loss:
+  type: "combined"               # "combined", "ce", or "dice"
+  ce_weight: 0.5                 # Cross-entropy weight (if combined)
+  dice_weight: 0.5               # Dice loss weight (if combined)
+  smooth: 1.0                    # Smoothing factor for Dice loss
+
+# Optimizer Configuration
+# -----------------------------------------------------------------------------
+optimizer:
+  type: "adam"                   # Optimizer type
+  betas: [0.9, 0.999]           # Adam beta parameters
+  eps: 1.0e-8                    # Epsilon for numerical stability
+  weight_decay: 0.0              # L2 regularization (0 = disabled)
+
+# Learning Rate Scheduler
+# -----------------------------------------------------------------------------
+scheduler:
+  type: "plateau"                # "plateau", "step", or "cosine"
+  mode: "min"                    # Minimize validation loss
+  patience: 5                    # Epochs to wait before reducing LR
+  factor: 0.5                    # LR reduction factor
+  min_lr: 1.0e-7                # Minimum learning rate
+
+# Data Augmentation
+# -----------------------------------------------------------------------------
+augmentation:
+  enabled: true                  # Enable augmentation for training
+  horizontal_flip_prob: 0.5      # Probability of horizontal flip
+  rotation_range: [-10, 10]      # Rotation angle range (degrees)
+  brightness_range: [0.8, 1.2]   # Brightness adjustment range
+  
+# Benchmarking Configuration
+# -----------------------------------------------------------------------------
+benchmark:
+  enabled: true                  # Run benchmarking after training
+  save_predictions: true         # Save example predictions
+  num_examples: 5                # Number of example predictions to save
+  
+  # Metrics to compute
+  metrics:
+    - "iou"                      # Intersection over Union
+    - "dice"                     # Dice score
+    - "loss"                     # Validation loss
+    - "inference_time"           # Speed metrics
+    - "memory_usage"             # GPU memory usage
+
+# Visualization Configuration
+# -----------------------------------------------------------------------------
+visualization:
+  plot_training_curves: true     # Save training history plots
+  plot_comparisons: true         # Create model comparison plots
+  plot_per_class_metrics: true   # Per-class IoU heatmaps
+  dpi: 150                       # Plot resolution
+  
+# Hardware Requirements (for validation)
+# -----------------------------------------------------------------------------
+hardware:
+  min_gpu_memory_gb: 5.5         # Minimum GPU memory (GTX 1660 Ti baseline)
+  min_ram_gb: 8                  # Minimum system RAM
+  min_cpu_cores: 4               # Minimum CPU cores
+
+# Logging Configuration
+# -----------------------------------------------------------------------------
+logging:
+  save_metrics: true             # Save metrics to JSON
+  save_model_checkpoints: true   # Save best model weights
+  verbose: true                  # Print detailed progress
+  
+  # What to log
+  log_every_n_batches: 10        # Log training metrics frequency
+  save_train_history: true       # Save full training history
+  save_hardware_profile: true    # Save detected hardware info
+
+# Advanced Settings (Expert Users Only)
+# -----------------------------------------------------------------------------
+advanced:
+  # CUDA settings (automatically configured)
+  cuda_visible_devices: "0"      # GPU to use (0 = first GPU)
+  cudnn_benchmark: true          # Enable cuDNN auto-tuner
+  cudnn_deterministic: false     # Disable for better performance
+  
+  # Memory management
+  max_split_size_mb: 128         # CUDA memory pool split size
+  empty_cache_freq: 1            # Clear cache every N epochs
+  
+  # Numerical stability
+  clip_grad_norm: 1.0            # Gradient norm clipping
+  eps: 1.0e-8                    # Small epsilon for divisions
+
+# Notes
+# -----------------------------------------------------------------------------
+# - Mixed precision (FP16) is CRITICAL for 6GB GPUs - do not disable
+# - Batch sizes are automatically scaled based on detected GPU
+# - For GPUs >6GB, the pipeline will increase batch sizes automatically
+# - Modify num_epochs for quick testing (e.g., set to 10)
+# - Set models.*.enabled to false to skip training that model
+# =============================================================================

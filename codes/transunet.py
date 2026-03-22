@@ -1,0 +1,1014 @@
+"""
+Thermal Facial Region Detection System - TransUNet
+==================================================
+CNN-Transformer hybrid architecture for thermal face segmentation
+"""
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+import json
+import cv2
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import time
+import math
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+
+class Config:
+    """Configuration for the thermal face detection system"""
+
+    # Data paths
+    DATA_DIR = Path("")
+    THERMAL_DIR = Path("S1/")
+    ANNOTATIONS_FILE = "S1.csv"
+    POLYGONS_FILE = "polygonal_masks.json"
+    BBOXES_FILE = "bounding_boxes.csv"
+
+    # Model parameters
+    IMAGE_SIZE = (256, 256)
+    NUM_CLASSES = 10
+    BATCH_SIZE = 8
+    LEARNING_RATE = 1e-4
+    NUM_EPOCHS = 100
+
+    # Thermal conversion
+    RAW_TO_CELSIUS = np.vectorize(lambda raw: (raw / 100) - 273.15)
+
+    # Region names
+    REGION_NAMES = [
+        "background",
+        "Contorno inferior do Rosto",
+        "Sombrancelha esquerda",
+        "Sombrancelha direita",
+        "Nariz",
+        "Olho esquerdo",
+        "Olho direito",
+        "Boca",
+        "Labios",
+        "Testa"
+    ]
+
+    # Device
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ============================================================================
+# DATA LOADING AND PREPROCESSING
+# ============================================================================
+
+class ThermalDataLoader:
+    """Load and preprocess thermal image data"""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.annotations = None
+        self.polygons = None
+        self.bboxes = None
+
+    def load_annotations(self):
+        """Load all annotation files"""
+        self.annotations = pd.read_csv(
+            self.config.DATA_DIR / self.config.ANNOTATIONS_FILE
+        )
+
+        with open(self.config.DATA_DIR / self.config.POLYGONS_FILE, 'r') as f:
+            self.polygons = json.load(f)
+
+        self.bboxes = pd.read_csv(
+            self.config.DATA_DIR / self.config.BBOXES_FILE
+        )
+
+        print(f"Loaded {len(self.annotations)} annotated samples")
+        print(f"Loaded {len(self.polygons)} polygon annotations")
+        return self
+
+    def load_thermal_image_from_tiff(self, tiff_path: str) -> np.ndarray:
+        """Load thermal image from TIFF file"""
+        thermal_raw = cv2.imread(tiff_path, cv2.IMREAD_UNCHANGED)
+        thermal_celsius = self.config.RAW_TO_CELSIUS(thermal_raw)
+        return thermal_celsius.astype(np.float32)
+
+    def load_thermal_image(self, sample_id: str) -> np.ndarray:
+        """Load thermal image for a given sample ID"""
+        tiff_path = self.config.THERMAL_DIR / f"{sample_id}.tiff"
+        if tiff_path.exists():
+            return self.load_thermal_image_from_tiff(str(tiff_path))
+        raise FileNotFoundError(f"Thermal image not found for {sample_id}")
+
+    def crop_to_bbox(self, thermal_img: np.ndarray,
+                     sample_id: str, padding: int = 10) -> np.ndarray:
+        """Crop thermal image to bounding box region"""
+        if self.bboxes is None or sample_id not in self.bboxes['ID'].values:
+            return thermal_img
+
+        bbox = self.bboxes[self.bboxes['ID'] == sample_id].iloc[0]
+
+        min_x = max(0, int(bbox['min_x']) - padding)
+        min_y = max(0, int(bbox['min_y']) - padding)
+        max_x = min(thermal_img.shape[1], int(bbox['max_x']) + padding)
+        max_y = min(thermal_img.shape[0], int(bbox['max_y']) + padding)
+
+        return thermal_img[min_y:max_y, min_x:max_x]
+
+    def create_segmentation_mask(self, sample_id: str,
+                                 img_shape: Tuple[int, int],
+                                 offset: Tuple[int, int] = (0, 0)) -> np.ndarray:
+        """Create segmentation mask from polygon annotations"""
+        mask = np.zeros(img_shape, dtype=np.uint8)
+
+        if self.polygons is None or sample_id not in self.polygons:
+            return mask
+
+        regions = self.polygons[sample_id]
+        offset_x, offset_y = offset
+
+        for region_idx, region_name in enumerate(self.config.REGION_NAMES[1:], 1):
+            if region_name in regions:
+                polygon = np.array(regions[region_name])
+                polygon[:, 0] -= offset_x
+                polygon[:, 1] -= offset_y
+                cv2.fillPoly(mask, [polygon.astype(np.int32)], region_idx)
+
+        return mask
+
+
+# ============================================================================
+# DATASET CLASS
+# ============================================================================
+
+class ThermalFaceDataset(Dataset):
+    """PyTorch Dataset for thermal facial images"""
+
+    def __init__(self, sample_ids: List[str], data_loader: ThermalDataLoader,
+                 config: Config, augment: bool = False):
+        self.sample_ids = sample_ids
+        self.data_loader = data_loader
+        self.config = config
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.sample_ids)
+
+    def normalize_thermal(self, thermal_img: np.ndarray) -> np.ndarray:
+        """Normalize thermal image to [0, 1] range"""
+        min_val = thermal_img.min()
+        max_val = thermal_img.max()
+        if max_val - min_val > 0:
+            return (thermal_img - min_val) / (max_val - min_val)
+        return thermal_img
+
+    def augment_data(self, image: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Apply data augmentation"""
+        if np.random.random() > 0.5:
+            image = np.fliplr(image)
+            mask = np.fliplr(mask)
+
+        if np.random.random() > 0.5:
+            angle = np.random.uniform(-10, 10)
+            h, w = image.shape
+            M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+            image = cv2.warpAffine(image, M, (w, h))
+            mask = cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST)
+
+        if np.random.random() > 0.5:
+            factor = np.random.uniform(0.8, 1.2)
+            image = np.clip(image * factor, 0, 1)
+
+        return image, mask
+
+    def __getitem__(self, idx):
+        sample_id = self.sample_ids[idx]
+
+        thermal_img = self.data_loader.load_thermal_image(sample_id)
+
+        offset_x = 0
+        offset_y = 0
+        if self.data_loader.bboxes is not None and sample_id in self.data_loader.bboxes['ID'].values:
+            bbox = self.data_loader.bboxes[
+                self.data_loader.bboxes['ID'] == sample_id
+            ].iloc[0]
+            offset_x = int(bbox['min_x']) - 10
+            offset_y = int(bbox['min_y']) - 10
+
+        thermal_img = self.data_loader.crop_to_bbox(thermal_img, sample_id)
+
+        mask = self.data_loader.create_segmentation_mask(
+            sample_id, thermal_img.shape, (offset_x, offset_y)
+        )
+
+        thermal_img = self.normalize_thermal(thermal_img)
+
+        if self.augment:
+            thermal_img, mask = self.augment_data(thermal_img, mask)
+
+        thermal_img = cv2.resize(
+            thermal_img, self.config.IMAGE_SIZE,
+            interpolation=cv2.INTER_LINEAR
+        )
+        mask = cv2.resize(
+            mask, self.config.IMAGE_SIZE,
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        thermal_img = torch.from_numpy(thermal_img).unsqueeze(0).float()
+        mask = torch.from_numpy(mask).long()
+
+        return thermal_img, mask, sample_id
+
+
+# ============================================================================
+# VISION TRANSFORMER COMPONENTS
+# ============================================================================
+
+class MultiHeadAttention(nn.Module):
+    """Multi-head self-attention mechanism"""
+
+    def __init__(self, embed_dim, num_heads, dropout=0.0):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+
+        self.qkv = nn.Linear(embed_dim, embed_dim * 3)
+        self.attn_drop = nn.Dropout(dropout)
+        self.proj = nn.Linear(embed_dim, embed_dim)
+        self.proj_drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class MLP(nn.Module):
+    """MLP block for transformer"""
+
+    def __init__(self, in_features, hidden_features=None, out_features=None, dropout=0.0):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+
+class TransformerBlock(nn.Module):
+    """Transformer encoder block"""
+
+    def __init__(self, embed_dim, num_heads, mlp_ratio=4.0, dropout=0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = MultiHeadAttention(embed_dim, num_heads, dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        mlp_hidden_dim = int(embed_dim * mlp_ratio)
+        self.mlp = MLP(embed_dim, mlp_hidden_dim, dropout=dropout)
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+# ============================================================================
+# CNN ENCODER (ResNet-style)
+# ============================================================================
+
+class ResNetBlock(nn.Module):
+    """ResNet bottleneck block"""
+
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        mid_channels = out_channels // 4
+
+        self.conv1 = nn.Conv2d(in_channels, mid_channels, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(mid_channels)
+        self.conv2 = nn.Conv2d(mid_channels, mid_channels, 3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(mid_channels)
+        self.conv3 = nn.Conv2d(mid_channels, out_channels, 1, bias=False)
+        self.bn3 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.downsample = None
+        if stride != 1 or in_channels != out_channels:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class CNNEncoder(nn.Module):
+    """CNN encoder for feature extraction (ResNet-50 style)"""
+
+    def __init__(self, in_channels=1):
+        super().__init__()
+
+        # Initial convolution - modified for single channel input
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # ResNet stages
+        self.layer1 = self._make_layer(64, 256, 3, stride=1)
+        self.layer2 = self._make_layer(256, 512, 4, stride=2)
+        self.layer3 = self._make_layer(512, 1024, 6, stride=2)
+
+    def _make_layer(self, in_channels, out_channels, blocks, stride):
+        layers = []
+        layers.append(ResNetBlock(in_channels, out_channels, stride))
+        for _ in range(1, blocks):
+            layers.append(ResNetBlock(out_channels, out_channels))
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        # Initial layers
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x0 = x  # 64 channels, H/2, W/2
+
+        x = self.maxpool(x)
+        x1 = self.layer1(x)  # 256 channels, H/4, W/4
+        x2 = self.layer2(x1)  # 512 channels, H/8, W/8
+        x3 = self.layer3(x2)  # 1024 channels, H/16, W/16
+
+        return x0, x1, x2, x3
+
+
+# ============================================================================
+# TRANSUNET MODEL
+# ============================================================================
+
+class TransUNet(nn.Module):
+    """TransUNet: Transformer-CNN Hybrid Architecture"""
+
+    def __init__(self, img_size=256, in_channels=1, num_classes=10,
+                 embed_dim=768, depth=12, num_heads=12):
+        super().__init__()
+
+        self.img_size = img_size
+        self.embed_dim = embed_dim
+        self.patch_size = 16
+
+        # CNN Encoder
+        self.cnn_encoder = CNNEncoder(in_channels)
+
+        # Patch embedding from CNN features
+        # Input from CNN: 1024 channels at 16x16 (H/16, W/16)
+        self.patch_embed = nn.Conv2d(1024, embed_dim, kernel_size=1)
+
+        # Positional embedding
+        num_patches = (img_size // self.patch_size) ** 2
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+
+        # Transformer Encoder
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(embed_dim, num_heads)
+            for _ in range(depth)
+        ])
+
+        self.norm = nn.LayerNorm(embed_dim)
+
+        # Decoder - Cascaded Upsampler with skip connections
+        self.decoder3 = nn.Sequential(
+            nn.Conv2d(embed_dim, 512, 3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, 3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True)
+        )
+
+        self.decoder2 = nn.Sequential(
+            nn.Conv2d(512 + 512, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True)
+        )
+
+        self.decoder1 = nn.Sequential(
+            nn.Conv2d(256 + 256, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True)
+        )
+
+        self.decoder0 = nn.Sequential(
+            nn.Conv2d(128 + 64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+
+        # Upsampling layers
+        self.up1 = nn.ConvTranspose2d(512, 512, 2, stride=2)
+        self.up2 = nn.ConvTranspose2d(256, 256, 2, stride=2)
+        self.up3 = nn.ConvTranspose2d(128, 128, 2, stride=2)
+        self.up4 = nn.ConvTranspose2d(64, 64, 2, stride=2)
+
+        # Final output
+        self.final = nn.Conv2d(64, num_classes, 1)
+
+        # Initialize positional embeddings
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+
+        # CNN Encoder with skip connections
+        x0, x1, x2, x3 = self.cnn_encoder(x)
+        # x0: 64 channels, H/2, W/2
+        # x1: 256 channels, H/4, W/4
+        # x2: 512 channels, H/8, W/8
+        # x3: 1024 channels, H/16, W/16
+
+        # Patch embedding
+        x_embed = self.patch_embed(x3)  # B, embed_dim, H/16, W/16
+        B, C_emb, H_emb, W_emb = x_embed.shape
+
+        # Reshape for transformer
+        x_flat = x_embed.flatten(2).transpose(1, 2)  # B, N, embed_dim
+
+        # Add positional embedding
+        x_flat = x_flat + self.pos_embed
+
+        # Transformer Encoder
+        for blk in self.transformer_blocks:
+            x_flat = blk(x_flat)
+
+        x_flat = self.norm(x_flat)
+
+        # Reshape back to spatial
+        x_decoded = x_flat.transpose(1, 2).reshape(B, C_emb, H_emb, W_emb)
+
+        # Decoder with skip connections
+        # Stage 3
+        d3 = self.decoder3(x_decoded)  # 512 channels, H/16, W/16
+        d3 = self.up1(d3)  # 512 channels, H/8, W/8
+
+        # Stage 2
+        d2 = torch.cat([d3, x2], dim=1)  # 512+512 channels
+        d2 = self.decoder2(d2)  # 256 channels, H/8, W/8
+        d2 = self.up2(d2)  # 256 channels, H/4, W/4
+
+        # Stage 1
+        d1 = torch.cat([d2, x1], dim=1)  # 256+256 channels
+        d1 = self.decoder1(d1)  # 128 channels, H/4, W/4
+        d1 = self.up3(d1)  # 128 channels, H/2, W/2
+
+        # Stage 0
+        d0 = torch.cat([d1, x0], dim=1)  # 128+64 channels
+        d0 = self.decoder0(d0)  # 64 channels, H/2, W/2
+        d0 = self.up4(d0)  # 64 channels, H, W
+
+        # Final output
+        output = self.final(d0)
+
+        return output
+
+
+# ============================================================================
+# LOSS FUNCTIONS
+# ============================================================================
+
+class DiceLoss(nn.Module):
+    """Dice Loss for segmentation"""
+
+    def __init__(self, smooth=1.0):
+        super().__init__()
+        self.smooth = smooth
+
+    def forward(self, pred, target):
+        pred = F.softmax(pred, dim=1)
+        target_one_hot = F.one_hot(target, pred.shape[1]).permute(0, 3, 1, 2)
+
+        intersection = (pred * target_one_hot).sum(dim=(2, 3))
+        union = pred.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3))
+
+        dice = (2. * intersection + self.smooth) / (union + self.smooth)
+        return 1 - dice.mean()
+
+
+class CombinedLoss(nn.Module):
+    """Combined Cross-Entropy and Dice Loss"""
+
+    def __init__(self, ce_weight=0.5, dice_weight=0.5):
+        super().__init__()
+        self.ce_weight = ce_weight
+        self.dice_weight = dice_weight
+        self.ce_loss = nn.CrossEntropyLoss()
+        self.dice_loss = DiceLoss()
+
+    def forward(self, pred, target):
+        ce = self.ce_loss(pred, target)
+        dice = self.dice_loss(pred, target)
+        return self.ce_weight * ce + self.dice_weight * dice
+
+
+# ============================================================================
+# METRICS
+# ============================================================================
+
+def calculate_iou(pred, target, num_classes):
+    """Calculate IoU for each class"""
+    ious = []
+    pred = pred.view(-1)
+    target = target.view(-1)
+
+    for cls in range(num_classes):
+        pred_inds = pred == cls
+        target_inds = target == cls
+        intersection = (pred_inds & target_inds).sum().float()
+        union = (pred_inds | target_inds).sum().float()
+
+        if union == 0:
+            ious.append(float('nan'))
+        else:
+            ious.append((intersection / union).item())
+
+    return ious
+
+
+# ============================================================================
+# ENHANCED TRAINER WITH METRICS
+# ============================================================================
+
+class Trainer:
+    """Enhanced training pipeline with comprehensive metrics"""
+
+    def __init__(self, model, train_loader, val_loader, config: Config):
+        self.model = model.to(config.DEVICE)
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.config = config
+
+        # Loss and optimizer
+        self.criterion = CombinedLoss()
+        self.optimizer = torch.optim.Adam(
+            model.parameters(), lr=config.LEARNING_RATE
+        )
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', patience=5, factor=0.5
+        )
+
+        # Metrics tracking
+        self.train_losses = []
+        self.val_losses = []
+        self.val_ious = []
+        self.inference_times = []
+        self.best_val_loss = float('inf')
+
+        # Calculate model size
+        self.model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Model Parameters: {self.model_params:,}")
+
+    def train_epoch(self):
+        """Train for one epoch"""
+        self.model.train()
+        total_loss = 0
+
+        for images, masks, _ in tqdm(self.train_loader, desc="Training"):
+            images = images.to(self.config.DEVICE)
+            masks = masks.to(self.config.DEVICE)
+
+            self.optimizer.zero_grad()
+            outputs = self.model(images)
+            loss = self.criterion(outputs, masks)
+
+            loss.backward()
+            self.optimizer.step()
+
+            total_loss += loss.item()
+
+        return total_loss / len(self.train_loader)
+
+    def validate(self):
+        """Validate the model with comprehensive metrics"""
+        self.model.eval()
+        total_loss = 0
+        all_ious = []
+        inference_times = []
+
+        with torch.no_grad():
+            for images, masks, _ in tqdm(self.val_loader, desc="Validation"):
+                images = images.to(self.config.DEVICE)
+                masks = masks.to(self.config.DEVICE)
+
+                # Measure inference time
+                start_time = time.time()
+                outputs = self.model(images)
+                inference_time = (time.time() - start_time) * 1000 / images.size(0)
+                inference_times.append(inference_time)
+
+                loss = self.criterion(outputs, masks)
+                total_loss += loss.item()
+
+                # Calculate IoU
+                preds = torch.argmax(outputs, dim=1)
+                ious = calculate_iou(preds, masks, self.config.NUM_CLASSES)
+                all_ious.append(ious)
+
+        avg_loss = total_loss / len(self.val_loader)
+        avg_inference_time = np.mean(inference_times)
+
+        # Calculate mean IoU (ignoring NaN values)
+        mean_iou_per_class = np.nanmean(all_ious, axis=0)
+        mean_iou = np.nanmean(mean_iou_per_class)
+
+        return avg_loss, mean_iou, avg_inference_time
+
+    def train(self):
+        """Full training loop with metrics logging"""
+        print(f"Training on {self.config.DEVICE}")
+        print(f"Total Parameters: {self.model_params:,}")
+
+        for epoch in range(self.config.NUM_EPOCHS):
+            print(f"\nEpoch {epoch+1}/{self.config.NUM_EPOCHS}")
+
+            # Train
+            train_loss = self.train_epoch()
+            self.train_losses.append(train_loss)
+
+            # Validate
+            val_loss, val_iou, inference_time = self.validate()
+            self.val_losses.append(val_loss)
+            self.val_ious.append(val_iou)
+            self.inference_times.append(inference_time)
+
+            print(f"Train Loss: {train_loss:.4f}")
+            print(f"Val Loss: {val_loss:.4f}")
+            print(f"Val IoU: {val_iou:.4f}")
+            print(f"Inference Time: {inference_time:.2f} ms/image")
+
+            # Learning rate scheduling
+            self.scheduler.step(val_loss)
+
+            # Save best model
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                torch.save(
+                    self.model.state_dict(),
+                    'best_transunet_model.pth'
+                )
+                print("✓ Saved best model")
+
+    def plot_training_history(self):
+        """Plot comprehensive training metrics"""
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+        # Loss
+        axes[0, 0].plot(self.train_losses, label='Train Loss')
+        axes[0, 0].plot(self.val_losses, label='Val Loss')
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].legend()
+        axes[0, 0].set_title('Training & Validation Loss')
+
+        # IoU
+        axes[0, 1].plot(self.val_ious, label='Val IoU', color='green')
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('IoU')
+        axes[0, 1].legend()
+        axes[0, 1].set_title('Validation IoU')
+
+        # Inference Time
+        axes[1, 0].plot(self.inference_times, label='Inference Time', color='orange')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Time (ms)')
+        axes[1, 0].legend()
+        axes[1, 0].set_title('Inference Time per Image')
+
+        # Summary statistics
+        axes[1, 1].axis('off')
+        summary_text = f"""
+        Model: TransUNet
+        
+        Parameters: {self.model_params:,}
+        
+        Best Val Loss: {self.best_val_loss:.4f}
+        Best Val IoU: {max(self.val_ious):.4f}
+        
+        Avg Inference Time: {np.mean(self.inference_times):.2f} ms
+        """
+        axes[1, 1].text(0.1, 0.5, summary_text, fontsize=12, verticalalignment='center')
+
+        plt.tight_layout()
+        plt.savefig('transunet_training_history.png', dpi=150)
+        plt.close()
+
+
+# ============================================================================
+# INFERENCE
+# ============================================================================
+
+class ThermalFaceDetector:
+    """Inference class for detecting facial regions in thermal images"""
+
+    def __init__(self, model_path: str, config: Config):
+        self.config = config
+        self.model = TransUNet(
+            img_size=config.IMAGE_SIZE[0],
+            in_channels=1,
+            num_classes=config.NUM_CLASSES
+        )
+        self.model.load_state_dict(torch.load(model_path))
+        self.model.to(config.DEVICE)
+        self.model.eval()
+
+    def normalize_thermal(self, thermal_img: np.ndarray) -> np.ndarray:
+        """Normalize thermal image"""
+        min_val = thermal_img.min()
+        max_val = thermal_img.max()
+        if max_val - min_val > 0:
+            return (thermal_img - min_val) / (max_val - min_val)
+        return thermal_img
+
+    def predict(self, thermal_image: np.ndarray):
+        """Predict facial regions in a thermal image"""
+        original_shape = thermal_image.shape
+
+        thermal_image_norm = self.normalize_thermal(thermal_image)
+
+        thermal_image_resized = cv2.resize(
+            thermal_image_norm, self.config.IMAGE_SIZE,
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        image_tensor = torch.from_numpy(
+            thermal_image_resized).unsqueeze(0).unsqueeze(0)
+        image_tensor = image_tensor.float().to(self.config.DEVICE)
+
+        with torch.no_grad():
+            output = self.model(image_tensor)
+            pred_mask = torch.argmax(output, dim=1).squeeze().cpu().numpy()
+
+        pred_mask = cv2.resize(
+            pred_mask.astype(np.uint8),
+            (original_shape[1], original_shape[0]),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        regions = {}
+        for idx, region_name in enumerate(self.config.REGION_NAMES):
+            region_mask = (pred_mask == idx).astype(np.uint8)
+            regions[region_name] = region_mask
+
+        return regions, pred_mask
+
+    def get_stats_info(self, thermal_image: np.ndarray, regions: Dict[str, np.ndarray]):
+        """Calculate statistics for each region"""
+        stats_info = {}
+
+        for region_name, mask in regions.items():
+            region_temps = thermal_image[mask == 1]
+
+            if len(region_temps) == 0:
+                stats_info[region_name] = {
+                    'mean': None, 'median': None, 'mode': None,
+                    'std': None, 'min': None, 'max': None, 'pixel_count': 0
+                }
+                continue
+
+            mean_temp = np.mean(region_temps)
+            median_temp = np.median(region_temps)
+            std_temp = np.std(region_temps)
+            min_temp = np.min(region_temps)
+            max_temp = np.max(region_temps)
+
+            bins = np.arange(region_temps.min(), region_temps.max() + 0.1, 0.1)
+            hist, bin_edges = np.histogram(region_temps, bins=bins)
+            mode_idx = np.argmax(hist)
+            mode_temp = (bin_edges[mode_idx] + bin_edges[mode_idx + 1]) / 2
+
+            stats_info[region_name] = {
+                'mean': float(mean_temp),
+                'median': float(median_temp),
+                'mode': float(mode_temp),
+                'std': float(std_temp),
+                'min': float(min_temp),
+                'max': float(max_temp),
+                'pixel_count': int(len(region_temps))
+            }
+
+        return stats_info
+
+    def visualize_predictions(self, thermal_image: np.ndarray,
+                              regions: Dict[str, np.ndarray],
+                              save_path: Optional[str] = None):
+        """Visualize predicted regions"""
+        fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+        axes = axes.flatten()
+
+        axes[0].imshow(thermal_image, cmap='hot')
+        axes[0].set_title('Original Thermal Image')
+        axes[0].axis('off')
+
+        for idx, (region_name, mask) in enumerate(regions.items(), 1):
+            if idx < len(axes):
+                axes[idx].imshow(mask, cmap='gray')
+                axes[idx].set_title(region_name, fontsize=8)
+                axes[idx].axis('off')
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.show()
+
+    def print_stats_report(self, stats_info: Dict[str, Dict]):
+        """Print thermal statistics report"""
+        print("\n" + "="*80)
+        print("THERMAL STATISTICS REPORT (°C) - TransUNet")
+        print("="*80)
+
+        for region_name, stats in stats_info.items():
+            print(f"\n{region_name}:")
+            print("-" * 80)
+
+            if stats['pixel_count'] == 0:
+                print("  No pixels detected in this region")
+                continue
+
+            print(f"  Mean:        {stats['mean']:.2f} °C")
+            print(f"  Median:      {stats['median']:.2f} °C")
+            print(f"  Mode:        {stats['mode']:.2f} °C")
+            print(f"  Std Dev:     {stats['std']:.2f} °C")
+            print(f"  Min:         {stats['min']:.2f} °C")
+            print(f"  Max:         {stats['max']:.2f} °C")
+            print(f"  Pixel Count: {stats['pixel_count']}")
+
+        print("\n" + "="*80)
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+def main():
+    """Main execution function"""
+
+    config = Config()
+
+    print("Loading annotations...")
+    data_loader = ThermalDataLoader(config)
+    data_loader.load_annotations()
+
+    if data_loader.polygons is None:
+        print("Error: Polygons not loaded. Check if annotation files exist.")
+        return
+
+    sample_ids = list(data_loader.polygons.keys())
+
+    train_ids, val_ids = train_test_split(
+        sample_ids, test_size=0.2, random_state=42
+    )
+
+    print(f"Training samples: {len(train_ids)}")
+    print(f"Validation samples: {len(val_ids)}")
+
+    train_dataset = ThermalFaceDataset(
+        train_ids, data_loader, config, augment=True)
+    val_dataset = ThermalFaceDataset(
+        val_ids, data_loader, config, augment=False)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=config.BATCH_SIZE,
+        shuffle=True, num_workers=4, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=config.BATCH_SIZE,
+        shuffle=False, num_workers=4, pin_memory=True
+    )
+
+    print("\nInitializing TransUNet model...")
+    model = TransUNet(
+        img_size=config.IMAGE_SIZE[0],
+        in_channels=1,
+        num_classes=config.NUM_CLASSES
+    )
+
+    print("\nStarting training...")
+    trainer = Trainer(model, train_loader, val_loader, config)
+    trainer.train()
+    trainer.plot_training_history()
+
+    print("\nTesting inference...")
+    detector = ThermalFaceDetector('best_transunet_model.pth', config)
+
+    test_id = val_ids[0]
+    test_image = data_loader.load_thermal_image(test_id)
+    test_image = data_loader.crop_to_bbox(test_image, test_id)
+
+    regions, pred_mask = detector.predict(test_image)
+    detector.visualize_predictions(
+        test_image, regions,
+        save_path='transunet_prediction_example.png'
+    )
+
+    print("\n✓ Training completed successfully!")
+    print(f"Best model saved to: best_transunet_model.pth")
+
+
+def execution():
+    """Execution function for inference/demo"""
+    config = Config()
+
+    print("Loading annotations...")
+    data_loader = ThermalDataLoader(config)
+    data_loader.load_annotations()
+
+    if data_loader.polygons is None:
+        print("Error: Polygons not loaded. Check if annotation files exist.")
+        return
+
+    sample_ids = list(data_loader.polygons.keys())
+
+    train_ids, val_ids = train_test_split(
+        sample_ids, test_size=0.2, random_state=42
+    )
+
+    print(f"Training samples: {len(train_ids)}")
+    print(f"Validation samples: {len(val_ids)}")
+
+    print("\nTesting inference...")
+    detector = ThermalFaceDetector('best_transunet_model.pth', config)
+
+    test_id = val_ids[1]
+    test_image = data_loader.load_thermal_image(test_id)
+    test_image = data_loader.crop_to_bbox(test_image, test_id)
+
+    print("Min and Max values of test_image")
+    print(test_image.min(), test_image.max())
+
+    regions, pred_mask = detector.predict(test_image)
+    stats_info = detector.get_stats_info(test_image, regions)
+    detector.print_stats_report(stats_info)
+
+    background_mean = stats_info['background']['mean']
+    nose_temp_std = stats_info['Nariz']['std']
+
+
+if __name__ == "__main__":
+    execution()
