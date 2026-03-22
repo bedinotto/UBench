@@ -1,3 +1,10 @@
+# UBench specific files
+.DS_Store
+.vscode
+codes/__pycache__/
+data/
+logs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
