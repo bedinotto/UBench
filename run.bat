@@ -23,8 +23,17 @@ echo [OK] Python found:
 %PYTHON_CMD% --version
 echo.
 
+REM Create a timestamp for this run
+for /f "tokens=1-3 delims=/ " %%a in ("%DATE%") do set DATESTAMP=%%c-%%a-%%b
+for /f "tokens=1-3 delims=:." %%a in ("%TIME: =0%") do set TIMESTAMP=%%a-%%b-%%c
+set RUN_TIMESTAMP=%DATESTAMP%_%TIMESTAMP%
+set RUN_LOG_DIR=logs\%RUN_TIMESTAMP%
+if not exist "%RUN_LOG_DIR%" mkdir "%RUN_LOG_DIR%"
+echo [OK] Run ID: %RUN_TIMESTAMP%
+
 REM Parse arguments
 set SKIP_SETUP=0
+set SKIP_EXTRACT=0
 set PIPELINE_ARGS=
 
 :parse_args
@@ -34,12 +43,33 @@ if /i "%~1"=="--skip-setup" (
     shift
     goto parse_args
 )
+if /i "%~1"=="--skip-extract" (
+    set SKIP_EXTRACT=1
+    shift
+    goto parse_args
+)
 if /i "%~1"=="--help" goto show_help
 if /i "%~1"=="-h" goto show_help
 set PIPELINE_ARGS=!PIPELINE_ARGS! %1
 shift
 goto parse_args
 :end_parse
+
+REM Run data extraction unless skipped
+if !SKIP_EXTRACT!==0 (
+    echo ================================================================================
+    echo STEP 0: DATA EXTRACTION
+    echo ================================================================================
+    echo.
+
+    %PYTHON_CMD% codes\extract_data.py
+    if %ERRORLEVEL% NEQ 0 (
+        echo [ERROR] Data extraction failed!
+        exit /b 1
+    )
+) else (
+    echo [INFO] Skipping data extraction (--skip-extract flag detected)
+)
 
 REM Run setup unless skipped
 if !SKIP_SETUP!==0 (
@@ -75,10 +105,11 @@ echo ===========================================================================
 echo [SUCCESS] PIPELINE COMPLETED SUCCESSFULLY
 echo ================================================================================
 echo.
-echo Results are available in:
-echo   - outputs\models\     (trained model weights)
-echo   - outputs\plots\      (training curves and comparisons)
-echo   - log\                (training logs and metrics)
+echo Run ID: %RUN_TIMESTAMP%
+echo Results are available in timestamped subdirectories:
+echo   - outputs\^<timestamp^>\models\   (trained model weights)
+echo   - outputs\^<timestamp^>\plots\    (training curves and comparisons)
+echo   - logs\^<timestamp^>\             (training logs and metrics)
 echo.
 echo ================================================================================
 
@@ -89,6 +120,7 @@ echo Usage: run.bat [OPTIONS]
 echo.
 echo Options:
 echo   --skip-setup              Skip environment setup (use if already set up)
+echo   --skip-extract            Skip data extraction from ZIP files
 echo   --models MODEL [MODEL...] Train only specific models (unet, transunet, swin)
 echo   --skip-benchmark          Skip benchmarking after training
 echo   --epochs N                Number of training epochs (default: 100)
@@ -97,6 +129,7 @@ echo.
 echo Examples:
 echo   run.bat                                  # Full pipeline with setup
 echo   run.bat --skip-setup                     # Run without setup
+echo   run.bat --skip-extract --skip-setup      # Skip extraction and setup
 echo   run.bat --models unet                    # Train only U-Net
 echo   run.bat --models transunet swin          # Train TransUNet and Swin-UNet++
 echo   run.bat --skip-benchmark                 # Train all, skip benchmark

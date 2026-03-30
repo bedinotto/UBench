@@ -10,6 +10,9 @@ import platform
 import os
 from pathlib import Path
 
+# Add parent directory for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 
 class SetupManager:
     """Manages cross-platform setup and dependency installation"""
@@ -17,7 +20,8 @@ class SetupManager:
     def __init__(self):
         self.os_type = platform.system()  # 'Windows', 'Linux', 'Darwin'
         self.python_version = sys.version_info
-        self.requirements_file = Path(__file__).parent.parent / "requirements.txt"
+        self.project_root = Path(__file__).parent.parent
+        self.requirements_file = self.project_root / "requirements" / "requirements.txt"
         
     def print_header(self):
         """Print setup header"""
@@ -151,7 +155,7 @@ class SetupManager:
             "outputs/models",
             "outputs/plots",
             "outputs/predictions",
-            "log"
+            "logs"
         ]
         
         for dir_name in required_dirs:
@@ -251,6 +255,22 @@ class SetupManager:
         print("   python main_pipeline.py --epochs 50")
         print("="*80 + "\n")
     
+    def extract_data(self):
+        """Extract training data from ZIP files in requirements/"""
+        print("\nExtracting training data...")
+        
+        try:
+            from codes.extract_data import extract_all_data
+            return extract_all_data()
+        except ImportError:
+            try:
+                from extract_data import extract_all_data
+                return extract_all_data()
+            except ImportError:
+                print("⚠️  Could not import extract_data module — "
+                      "please run codes/extract_data.py manually")
+                return False
+    
     def run(self):
         """Execute complete setup process"""
         self.print_header()
@@ -285,7 +305,10 @@ class SetupManager:
         if not self.create_directories():
             return False
         
-        # Step 8: Check data files
+        # Step 8: Extract data from ZIP files
+        self.extract_data()
+        
+        # Step 9: Check data files
         data_ready = self.check_data_files()
         
         # Print next steps

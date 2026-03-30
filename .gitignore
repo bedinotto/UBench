@@ -4,6 +4,7 @@
 codes/__pycache__/
 data/
 logs/
+outputs/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

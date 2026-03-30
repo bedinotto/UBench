@@ -25,7 +25,7 @@ class Config:
     
     # Output paths (STRICT structure)
     OUTPUT_DIR = Path("outputs")
-    LOG_DIR = Path("log")
+    LOG_DIR = Path("logs")
     
     # Model parameters
     IMAGE_SIZE = (256, 256)
@@ -53,8 +53,17 @@ class Config:
     # Device
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    def __init__(self):
-        """Initialize and validate paths"""
+    def __init__(self, output_dir: str = None, log_dir: str = None):
+        """Initialize and validate paths
+        
+        Args:
+            output_dir: Override for output directory (e.g., timestamped subdir)
+            log_dir: Override for log directory (e.g., timestamped subdir)
+        """
+        if output_dir:
+            self.OUTPUT_DIR = Path(output_dir)
+        if log_dir:
+            self.LOG_DIR = Path(log_dir)
         self._validate_paths()
         self._create_output_dirs()
         if 'NUM_EPOCHS' in os.environ:

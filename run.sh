@@ -27,6 +27,28 @@ fi
 PYTHON_CMD="python3"
 echo -e "${GREEN}✓${NC} Python 3 found: $($PYTHON_CMD --version)"
 
+# Create a timestamp for this run
+RUN_TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+RUN_LOG_DIR="logs/${RUN_TIMESTAMP}"
+mkdir -p "${RUN_LOG_DIR}"
+echo -e "${GREEN}✓${NC} Run ID: ${RUN_TIMESTAMP}"
+
+# Function to extract data
+run_extract() {
+    echo ""
+    echo "================================================================================"
+    echo "STEP 0: DATA EXTRACTION"
+    echo "================================================================================"
+    echo ""
+
+    $PYTHON_CMD codes/extract_data.py 2>&1 | tee -a "${RUN_LOG_DIR}/extract.log"
+
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        echo -e "${RED}ERROR: Data extraction failed!${NC}"
+        exit 1
+    fi
+}
+
 # Function to run setup
 run_setup() {
     echo ""
@@ -34,10 +56,10 @@ run_setup() {
     echo "STEP 1: ENVIRONMENT SETUP"
     echo "================================================================================"
     echo ""
-    
-    $PYTHON_CMD codes/setup.py
-    
-    if [ $? -ne 0 ]; then
+
+    $PYTHON_CMD codes/setup.py 2>&1 | tee -a "${RUN_LOG_DIR}/setup.log"
+
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo -e "${RED}ERROR: Setup failed!${NC}"
         exit 1
     fi
@@ -51,10 +73,10 @@ run_pipeline() {
     echo "================================================================================"
     echo ""
     
-    # Pass all arguments to the pipeline
-    $PYTHON_CMD codes/main_pipeline.py "$@"
+    # Pass all arguments to the pipeline, capture output with tee
+    $PYTHON_CMD codes/main_pipeline.py "$@" 2>&1 | tee -a "${RUN_LOG_DIR}/pipeline.log"
     
-    if [ $? -ne 0 ]; then
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo -e "${RED}ERROR: Pipeline failed!${NC}"
         exit 1
     fi
@@ -62,15 +84,34 @@ run_pipeline() {
 
 # Main execution
 main() {
-    # Check if --skip-setup flag is provided
+    # Parse flags
     SKIP_SETUP=false
-    for arg in "$@"; do
-        if [ "$arg" == "--skip-setup" ]; then
-            SKIP_SETUP=true
-            # Remove --skip-setup from arguments
-            set -- "${@/$arg/}"
-        fi
+    SKIP_EXTRACT=false
+    PIPELINE_ARGS=()
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skip-setup)
+                SKIP_SETUP=true
+                shift
+                ;;
+            --skip-extract)
+                SKIP_EXTRACT=true
+                shift
+                ;;
+            *)
+                PIPELINE_ARGS+=("$1")
+                shift
+                ;;
+        esac
     done
+    
+    # Run data extraction unless skipped
+    if [ "$SKIP_EXTRACT" = false ]; then
+        run_extract
+    else
+        echo -e "${YELLOW}Skipping data extraction (--skip-extract flag detected)${NC}"
+    fi
     
     # Run setup unless skipped
     if [ "$SKIP_SETUP" = false ]; then
@@ -80,17 +121,20 @@ main() {
     fi
     
     # Run pipeline with remaining arguments
-    run_pipeline "$@"
+    run_pipeline "${PIPELINE_ARGS[@]}"
     
     echo ""
     echo "================================================================================"
     echo -e "${GREEN}✓✓✓ PIPELINE COMPLETED SUCCESSFULLY ✓✓✓${NC}"
     echo "================================================================================"
     echo ""
-    echo "Results are available in:"
-    echo "  - outputs/models/     (trained model weights)"
-    echo "  - outputs/plots/      (training curves and comparisons)"
-    echo "  - log/                (training logs and metrics)"
+    echo "Run ID: ${RUN_TIMESTAMP}"
+    echo "Results are available in timestamped subdirectories:"
+    echo "  - outputs/<timestamp>/models/   (trained model weights)"
+    echo "  - outputs/<timestamp>/plots/    (training curves and comparisons)"
+    echo "  - logs/<timestamp>/             (training logs and metrics)"
+    echo ""
+    echo "Full console log: ${RUN_LOG_DIR}/pipeline.log"
     echo ""
     echo "================================================================================"
 }
@@ -101,6 +145,7 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
     echo ""
     echo "Options:"
     echo "  --skip-setup              Skip environment setup (use if already set up)"
+    echo "  --skip-extract            Skip data extraction from ZIP files"
     echo "  --models MODEL [MODEL...] Train only specific models (unet, transunet, swin)"
     echo "  --skip-benchmark          Skip benchmarking after training"
     echo "  --epochs N                Number of training epochs (default: 100)"
@@ -109,6 +154,7 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
     echo "Examples:"
     echo "  ./run.sh                                  # Full pipeline with setup"
     echo "  ./run.sh --skip-setup                     # Run without setup"
+    echo "  ./run.sh --skip-extract --skip-setup      # Skip extraction and setup"
     echo "  ./run.sh --models unet                    # Train only U-Net"
     echo "  ./run.sh --models transunet swin          # Train TransUNet and Swin-UNet++"
     echo "  ./run.sh --skip-benchmark                 # Train all, skip benchmark"

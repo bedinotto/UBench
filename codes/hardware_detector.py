@@ -233,8 +233,12 @@ class HardwareDetector:
         return env_vars
 
 
-def detect_and_optimize() -> HardwareProfile:
-    """Main function to detect hardware and return optimized profile"""
+def detect_and_optimize(log_dir: str = "logs") -> 'HardwareProfile':
+    """Main function to detect hardware and return optimized profile
+    
+    Args:
+        log_dir: Directory to save the hardware profile to.
+    """
     detector = HardwareDetector()
     profile = detector.detect()
     
@@ -245,8 +249,8 @@ def detect_and_optimize() -> HardwareProfile:
         print(f"Set {key}={value}")
     
     # Save profile
-    os.makedirs("log", exist_ok=True)
-    detector.save_profile("log/hardware_profile.json")
+    os.makedirs(log_dir, exist_ok=True)
+    detector.save_profile(os.path.join(log_dir, "hardware_profile.json"))
     
     return profile
 

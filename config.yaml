@@ -9,9 +9,8 @@
 data:
   # Directory structure (strict - do not change unless restructuring project)
   data_dir: "data"
-  thermal_dir: "data/S1"
   output_dir: "outputs"
-  log_dir: "log"
+  log_dir: "logs"
   
   # Image processing
   image_size: [256, 256]        # Resize thermal images to this size

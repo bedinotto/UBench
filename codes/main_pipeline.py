@@ -46,15 +46,30 @@ class Pipeline:
         print("THERMAL FACE DETECTION - AUTOMATED TRAINING PIPELINE")
         print("="*80 + "\n")
         
-        # Detect hardware and optimize
-        print("Step 1: Hardware Detection & Optimization")
-        print("-"*80)
-        self.hardware_profile = detect_and_optimize()
+        # Create timestamped run directories
+        self.run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.run_output_dir = Path("outputs") / self.run_timestamp
+        self.run_log_dir = Path("logs") / self.run_timestamp
+        self.run_output_dir.mkdir(parents=True, exist_ok=True)
+        self.run_log_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Run ID:     {self.run_timestamp}")
+        print(f"Output dir: {self.run_output_dir}")
+        print(f"Log dir:    {self.run_log_dir}")
         
-        # Initialize configuration
+        # Detect hardware and optimize
+        print("\nStep 1: Hardware Detection & Optimization")
+        print("-"*80)
+        self.hardware_profile = detect_and_optimize(
+            log_dir=str(self.run_log_dir)
+        )
+        
+        # Initialize configuration with timestamped dirs
         print("\nStep 2: Configuration & Data Validation")
         print("-"*80)
-        self.config = Config()
+        self.config = Config(
+            output_dir=str(self.run_output_dir),
+            log_dir=str(self.run_log_dir)
+        )
         print("✅ Configuration validated")
         print("✅ Data directories verified")
         
@@ -298,7 +313,8 @@ class Pipeline:
             print("\n" + "="*80)
             print("✅✅✅ PIPELINE COMPLETED SUCCESSFULLY ✅✅✅")
             print("="*80)
-            print(f"\nResults saved to:")
+            print(f"\nRun ID:   {self.run_timestamp}")
+            print(f"Results saved to:")
             print(f"  Models:  {self.config.OUTPUT_DIR / 'models'}")
             print(f"  Plots:   {self.config.OUTPUT_DIR / 'plots'}")
             print(f"  Logs:    {self.config.LOG_DIR}")

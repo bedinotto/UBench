@@ -102,23 +102,44 @@ def generate_polygonal_masks(input_csv, output_json):
     print(f"Polygonal masks saved to {output_json}")
 
 
-if __name__ == "__main__":
-    import sys
-    import glob
-    import os
-    
-    csv_files = glob.glob("../data/S*.csv")
-    # Filter only those that match S followed by digits.csv
-    valid_files = [f for f in csv_files if os.path.basename(f)[1:-4].isdigit()]
-    valid_files.sort(key=lambda x: int(os.path.basename(x)[1:-4]))
-    
-    for path_to_csv in valid_files:
-        basename = os.path.basename(path_to_csv)
-        dataset_name = basename[:-4]
-        
-        bounding_box_name = f"../data/{dataset_name}_bounding_boxes.csv"
-        polinomial_masks_name = f"../data/{dataset_name}_polygonal_masks.json"
-        
+def generate_all(data_dir: str):
+    """
+    Generate bounding boxes and polygonal masks for all Sx.csv files
+    in the given data directory.
+
+    Args:
+        data_dir: Path to the data directory containing Sx.csv files.
+    """
+    from pathlib import Path
+
+    data_path = Path(data_dir)
+    csv_files = sorted(data_path.glob("S*.csv"))
+    valid_files = [
+        f for f in csv_files
+        if f.stem.startswith("S") and f.stem[1:].isdigit()
+    ]
+    valid_files.sort(key=lambda x: int(x.stem[1:]))
+
+    if not valid_files:
+        print(f"No Sx.csv files found in {data_dir}")
+        return
+
+    for csv_path in valid_files:
+        dataset_name = csv_path.stem
+        bbox_path = data_path / f"{dataset_name}_bounding_boxes.csv"
+        polygon_path = data_path / f"{dataset_name}_polygonal_masks.json"
+
         print(f"Processing {dataset_name}...")
-        generate_bounding_boxes(path_to_csv, bounding_box_name)
-        generate_polygonal_masks(path_to_csv, polinomial_masks_name)
+        generate_bounding_boxes(str(csv_path), str(bbox_path))
+        generate_polygonal_masks(str(csv_path), str(polygon_path))
+
+
+if __name__ == "__main__":
+    import os
+    from pathlib import Path
+
+    # Resolve project root and data directory
+    project_root = Path(__file__).resolve().parent.parent
+    data_dir = project_root / "data"
+
+    generate_all(str(data_dir))
