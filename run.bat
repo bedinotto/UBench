@@ -91,6 +91,16 @@ set RUN_LOG_DIR=logs\%RUN_TIMESTAMP%
 if not exist "%RUN_LOG_DIR%" mkdir "%RUN_LOG_DIR%"
 echo [OK] Run ID: %RUN_TIMESTAMP%
 
+REM Shell-level log file (bat echo lines + python stderr from child procs)
+set LOG_FILE=%RUN_LOG_DIR%\run.log
+echo ======================================================================== >> "%LOG_FILE%"
+echo SESSION START  %DATE% %TIME% >> "%LOG_FILE%"
+echo Run ID: %RUN_TIMESTAMP% >> "%LOG_FILE%"
+echo ======================================================================== >> "%LOG_FILE%"
+
+REM Expose the log dir so Python scripts can write their own named log files
+set UBENCH_LOG_DIR=%RUN_LOG_DIR%
+
 REM Parse arguments
 set SKIP_SETUP=0
 set SKIP_EXTRACT=0
@@ -121,14 +131,17 @@ if !SKIP_EXTRACT!==0 (
     echo STEP 0: DATA EXTRACTION
     echo ================================================================================
     echo.
+    echo [STEP 0: DATA EXTRACTION] >> "%LOG_FILE%"
 
     %PYTHON_CMD% codes\extract_data.py
     if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] Data extraction failed! >> "%LOG_FILE%"
         echo [ERROR] Data extraction failed!
         exit /b 1
     )
 ) else (
     echo [INFO] Skipping data extraction (--skip-extract flag detected)
+    echo [INFO] Skipping data extraction >> "%LOG_FILE%"
 )
 
 REM Run setup unless skipped
@@ -137,14 +150,17 @@ if !SKIP_SETUP!==0 (
     echo STEP 1: ENVIRONMENT SETUP
     echo ================================================================================
     echo.
-    
+    echo [STEP 1: ENVIRONMENT SETUP] >> "%LOG_FILE%"
+
     %PYTHON_CMD% codes\setup.py
     if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] Setup failed! See messages above for details. >> "%LOG_FILE%"
         echo [ERROR] Setup failed! See messages above for details.
         exit /b 1
     )
 ) else (
     echo [INFO] Skipping setup (--skip-setup flag detected)
+    echo [INFO] Skipping setup >> "%LOG_FILE%"
 )
 
 REM Run pipeline
@@ -153,9 +169,11 @@ echo ===========================================================================
 echo STEP 2: RUNNING TRAINING PIPELINE
 echo ================================================================================
 echo.
+echo [STEP 2: RUNNING TRAINING PIPELINE] >> "%LOG_FILE%"
 
 %PYTHON_CMD% codes\main_pipeline.py !PIPELINE_ARGS!
 if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Pipeline failed! >> "%LOG_FILE%"
     echo [ERROR] Pipeline failed!
     exit /b 1
 )
@@ -171,7 +189,16 @@ echo   - outputs\^<timestamp^>\models\   (trained model weights)
 echo   - outputs\^<timestamp^>\plots\    (training curves and comparisons)
 echo   - logs\^<timestamp^>\             (training logs and metrics)
 echo.
+echo Log files saved to %RUN_LOG_DIR%\:
+echo   - run.log        (shell-level messages from run.bat)
+echo   - extract.log    (data extraction output)
+echo   - setup.log      (environment setup output)
+echo   - pipeline.log   (full training + benchmark output)
+echo.
 echo ================================================================================
+
+echo [SUCCESS] PIPELINE COMPLETED >> "%LOG_FILE%"
+echo SESSION END  %DATE% %TIME% >> "%LOG_FILE%"
 
 exit /b 0
 

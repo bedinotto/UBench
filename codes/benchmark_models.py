@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 try:
     from codes.unified_data import Config, create_data_loaders
-    from codes.unified_training import calculate_iou, calculate_dice_score
+    from codes.unified_training import calculate_iou, calculate_dice_score, _safe_filename
 except ImportError:
     from unified_data import Config, create_data_loaders
-    from unified_training import calculate_iou, calculate_dice_score
+    from unified_training import calculate_iou, calculate_dice_score, _safe_filename
 
 
 class ModelBenchmark:
@@ -192,7 +192,7 @@ class ModelBenchmark:
         
         # Save comparison table
         output_path = self.config.OUTPUT_DIR / "benchmark_comparison.csv"
-        df.to_csv(output_path, index=False)
+        df.to_csv(str(output_path), index=False)
         print(f"\n✅ Benchmark comparison saved to: {output_path}")
         
         # Print comparison table
@@ -238,7 +238,7 @@ class ModelBenchmark:
             axes[1].text(i, v + 0.02, f'{v:.4f}', ha='center', fontsize=10)
         
         plt.tight_layout()
-        plt.savefig(output_dir / "accuracy_comparison.png", dpi=150, bbox_inches='tight')
+        plt.savefig(str(output_dir / "accuracy_comparison.png"), dpi=150, bbox_inches='tight')
         plt.close()
         
         # 2. Speed Comparison
@@ -259,7 +259,7 @@ class ModelBenchmark:
             axes[1].text(i, v + 1, f'{v:.2f}', ha='center', fontsize=10)
         
         plt.tight_layout()
-        plt.savefig(output_dir / "speed_comparison.png", dpi=150, bbox_inches='tight')
+        plt.savefig(str(output_dir / "speed_comparison.png"), dpi=150, bbox_inches='tight')
         plt.close()
         
         # 3. Model Complexity
@@ -280,7 +280,7 @@ class ModelBenchmark:
             axes[1].text(i, v + 5, f'{v:.0f}', ha='center', fontsize=10)
         
         plt.tight_layout()
-        plt.savefig(output_dir / "complexity_comparison.png", dpi=150, bbox_inches='tight')
+        plt.savefig(str(output_dir / "complexity_comparison.png"), dpi=150, bbox_inches='tight')
         plt.close()
         
         # 4. Per-class IoU heatmap
@@ -300,16 +300,18 @@ class ModelBenchmark:
             ax.set_title('Per-Class IoU Comparison', fontsize=14, fontweight='bold')
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
-            plt.savefig(output_dir / "per_class_iou_heatmap.png", dpi=150, bbox_inches='tight')
+            plt.savefig(str(output_dir / "per_class_iou_heatmap.png"), dpi=150, bbox_inches='tight')
             plt.close()
         
         print(f"✅ Comparison plots saved to: {output_dir}")
     
     def _generate_report(self, df: pd.DataFrame, results_dict: Dict):
         """Generate detailed text report"""
-        report_path = self.config.OUTPUT_DIR / "benchmark_report.txt"
-        
-        with open(report_path, 'w') as f:
+        # Save report to LOG_DIR (alongside other per-run log files)
+        report_path = self.config.LOG_DIR / "benchmark_report.txt"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
             f.write("COMPREHENSIVE MODEL BENCHMARK REPORT\n")
             f.write("="*80 + "\n\n")
@@ -403,28 +405,34 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
     
     # Benchmark each model
     for model_name, model in models_dict.items():
-        model_path = config.OUTPUT_DIR / "models" / f"best_{model_name.lower().replace(' ', '_')}_model.pth"
-        
+        # Use the same safe-name logic as unified_training so the path matches
+        model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_model.pth"
+
         if not model_path.exists():
             print(f"⚠️  Model weights not found: {model_path}")
             results_dict[model_name] = None
             continue
-        
+
         # Load model
         loaded_model = benchmark.load_model(model, model_name, model_path)
-        
+
         # Run benchmark
         results = benchmark.benchmark_model(loaded_model, model_name, val_loader)
         results_dict[model_name] = results
-        
-        # Save individual results
+
+        # Save individual results to LOG_DIR
         if results:
-            results_path = config.LOG_DIR / f"{model_name.lower().replace(' ', '_')}_benchmark.json"
-            with open(results_path, 'w') as f:
+            log_dir = config.LOG_DIR
+            log_dir.mkdir(parents=True, exist_ok=True)
+            results_path = log_dir / f"{_safe_filename(model_name)}_benchmark.json"
+            with open(results_path, 'w', encoding='utf-8') as f:
                 # Convert numpy types to Python types for JSON serialization
-                serializable_results = {k: (v.tolist() if isinstance(v, np.ndarray) else 
-                                           float(v) if isinstance(v, (np.float32, np.float64)) else v)
-                                      for k, v in results.items()}
+                serializable_results = {
+                    k: (v.tolist() if isinstance(v, np.ndarray)
+                        else float(v) if isinstance(v, (np.float32, np.float64))
+                        else v)
+                    for k, v in results.items()
+                }
                 json.dump(serializable_results, f, indent=2)
     
     # Generate comparison

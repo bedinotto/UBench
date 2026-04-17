@@ -14,6 +14,14 @@ import zipfile
 import tempfile
 from pathlib import Path
 
+try:
+    from codes.logger import start_from_env as _start_log
+except ImportError:
+    try:
+        from logger import start_from_env as _start_log
+    except ImportError:
+        _start_log = None  # graceful fallback
+
 
 # Resolve the project root (parent of codes/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -300,8 +308,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Mirror output to extract.log in the pipeline's log directory (if available)
+    _logger = _start_log("extract.log") if _start_log else None
+
     if args.check:
         check_data_status()
     else:
         success = extract_all_data(force=args.force)
+        if _logger:
+            _logger.stop()
         sys.exit(0 if success else 1)
+
+    if _logger:
+        _logger.stop()

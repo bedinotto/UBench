@@ -8,6 +8,7 @@ import platform
 import subprocess
 import sys
 import os
+from pathlib import Path
 from typing import Dict, Tuple, Optional
 import json
 
@@ -217,10 +218,12 @@ class HardwareDetector:
         
         return True
     
-    def save_profile(self, filepath: str):
+    def save_profile(self, filepath):
         """Save hardware profile to JSON"""
         if self.profile:
-            with open(filepath, 'w') as f:
+            filepath = Path(filepath)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.profile.to_dict(), f, indent=2)
             print(f"[OK] Hardware profile saved to: {filepath}")
     
@@ -240,23 +243,24 @@ class HardwareDetector:
 
 def detect_and_optimize(log_dir: str = "logs") -> 'HardwareProfile':
     """Main function to detect hardware and return optimized profile
-    
+
     Args:
         log_dir: Directory to save the hardware profile to.
     """
     detector = HardwareDetector()
     profile = detector.detect()
-    
+
     # Set CUDA environment variables
     env_vars = detector.get_cuda_env_vars()
     for key, value in env_vars.items():
         os.environ[key] = value
         print(f"Set {key}={value}")
-    
-    # Save profile
-    os.makedirs(log_dir, exist_ok=True)
-    detector.save_profile(os.path.join(log_dir, "hardware_profile.json"))
-    
+
+    # Save profile using pathlib (cross-platform)
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
+    detector.save_profile(log_path / "hardware_profile.json")
+
     return profile
 
 

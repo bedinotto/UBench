@@ -21,6 +21,35 @@ except ImportError:
     from unified_data import Config
 
 
+def _safe_filename(name: str) -> str:
+    """
+    Convert a model name to a filesystem-safe filename stem.
+
+    Rules (cross-platform — Windows is the most restrictive):
+    - Spaces        → underscore
+    - Hyphens       → underscore
+    - Plus signs    → 'plus'
+    - Any remaining non-alphanumeric/underscore chars are dropped
+    - Result is lowercased
+
+    Examples
+    --------
+    'U-Net'         → 'u_net'
+    'TransUNet'     → 'transunet'
+    'Swin-UNet++'   → 'swin_unetplusplus'
+    """
+    import re
+    s = name.lower()
+    s = s.replace(' ', '_')
+    s = s.replace('-', '_')
+    s = s.replace('+', 'plus')
+    # Drop any character that is not alphanumeric or underscore
+    s = re.sub(r'[^\w]', '', s)
+    # Collapse consecutive underscores
+    s = re.sub(r'_+', '_', s)
+    return s.strip('_')
+
+
 class DiceLoss(nn.Module):
     """Dice Loss for segmentation"""
     
@@ -265,7 +294,9 @@ class UnifiedTrainer:
             # Save best model (based on validation loss)
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                model_path = self.config.OUTPUT_DIR / "models" / f"best_{self.model_name.lower().replace(' ', '_')}_model.pth"
+                models_dir = self.config.OUTPUT_DIR / "models"
+                models_dir.mkdir(parents=True, exist_ok=True)
+                model_path = models_dir / f"best_{_safe_filename(self.model_name)}_model.pth"
                 torch.save(self.model.state_dict(), model_path)
                 print(f"  ✅ Saved best model to: {model_path}")
             
@@ -331,8 +362,8 @@ class UnifiedTrainer:
                     fontsize=16, fontweight='bold', y=0.995)
         plt.tight_layout()
         
-        save_path = save_dir / f"{self.model_name.lower().replace(' ', '_')}_training_history.png"
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        save_path = save_dir / f"{_safe_filename(self.model_name)}_training_history.png"
+        plt.savefig(str(save_path), dpi=150, bbox_inches='tight')
         plt.close()
         
         print(f"✅ Training history plot saved to: {save_path}")
@@ -365,8 +396,8 @@ class UnifiedTrainer:
             "inference_times": self.inference_times
         }
         
-        save_path = save_dir / f"{self.model_name.lower().replace(' ', '_')}_metrics.json"
-        with open(save_path, 'w') as f:
+        save_path = save_dir / f"{_safe_filename(self.model_name)}_metrics.json"
+        with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(metrics, f, indent=2)
         
         print(f"✅ Training metrics saved to: {save_path}")

@@ -12,8 +12,12 @@ from pathlib import Path
 from datetime import datetime
 import argparse
 
-# Add parent directory to sys.path to resolve 'codes' module
+# Add parent directory to sys.path *before* importing codes modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from codes.logger import TeeLogger
+
+
 
 # Import modules
 from codes.hardware_detector import detect_and_optimize, HardwareProfile
@@ -52,9 +56,19 @@ class Pipeline:
         self.run_log_dir = Path("logs") / self.run_timestamp
         self.run_output_dir.mkdir(parents=True, exist_ok=True)
         self.run_log_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Start full-run console logger ──────────────────────────────────
+        # Expose log dir via env var so child scripts (setup, extract) can
+        # append to the same log directory.
+        os.environ["UBENCH_LOG_DIR"] = str(self.run_log_dir)
+        self._tee = TeeLogger(self.run_log_dir / "pipeline.log")
+        self._tee.start()
+        # ──────────────────────────────────────────────────────────────────
+
         print(f"Run ID:     {self.run_timestamp}")
         print(f"Output dir: {self.run_output_dir}")
         print(f"Log dir:    {self.run_log_dir}")
+        print(f"Console log:{self.run_log_dir / 'pipeline.log'}")
         
         # Detect hardware and optimize
         print("\nStep 1: Hardware Detection & Optimization")
@@ -318,6 +332,7 @@ class Pipeline:
             print(f"  Models:  {self.config.OUTPUT_DIR / 'models'}")
             print(f"  Plots:   {self.config.OUTPUT_DIR / 'plots'}")
             print(f"  Logs:    {self.config.LOG_DIR}")
+            print(f"  Console: {self.run_log_dir / 'pipeline.log'}")
             print("="*80 + "\n")
             
             return True
@@ -327,6 +342,9 @@ class Pipeline:
             import traceback
             traceback.print_exc()
             return False
+        finally:
+            # Always close the log file cleanly, even on failure
+            self._tee.stop()
     
     def print_summary(self):
         """Print training summary"""

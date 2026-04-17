@@ -13,6 +13,11 @@ from pathlib import Path
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+try:
+    from codes.logger import start_from_env as _start_log
+except ImportError:
+    _start_log = None  # graceful fallback if logger isn't available yet
+
 
 class SetupManager:
     """Manages cross-platform setup and dependency installation"""
@@ -513,9 +518,15 @@ class SetupManager:
 
 def main():
     """Main entry point"""
+    # Mirror all output to logs/<timestamp>/setup.log when called from the pipeline
+    _logger = _start_log("setup.log") if _start_log else None
+
     setup = SetupManager()
     success = setup.run()
-    
+
+    if _logger:
+        _logger.stop()
+
     sys.exit(0 if success else 1)
 
 
