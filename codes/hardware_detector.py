@@ -57,13 +57,43 @@ class HardwareProfile:
             return {"unet": 32, "transunet": 24, "swin": 20}
     
     def _calculate_workers(self) -> int:
-        """Calculate optimal number of data loading workers"""
-        # Windows does not support multiprocessing with DataLoader in spawn context
+        """
+        Calculate the optimal number of DataLoader prefetch workers.
+
+        DataLoader workers run on the CPU and preprocess the *next* batch
+        (read TIFF → crop → resize → augment → tensor) while the GPU is
+        busy training the *current* batch.  Using workers > 0 overlaps CPU
+        data loading with GPU computation, which reduces idle time on both.
+
+        Windows vs Linux difference
+        ---------------------------
+        Python's multiprocessing uses 'fork' on Linux (cheap — copies the
+        parent process memory instantly) and 'spawn' on Windows (expensive
+        — starts a brand-new Python interpreter for every worker, imports
+        all modules fresh, then receives pickled data from the parent).
+
+        Because of the higher per-worker startup and IPC cost on Windows,
+        using many workers gives diminishing returns faster.  2 workers is
+        the sweet spot: enough to keep the GPU fed without burning extra
+        RAM and CPU cycles on worker management overhead.
+
+        Prerequisites for Windows workers (all satisfied):
+          1. if __name__ == '__main__' guard in main_pipeline.py  ✓
+          2. All Dataset / Config objects are picklable              ✓
+          3. DataLoader uses multiprocessing_context='spawn'        ✓
+        """
         if self.os_type == 'Windows':
-            return 0
-        # Use at most 4 workers per GPU, capped by CPU count
+            # On Windows, DataLoader uses the 'spawn' start method which has
+            # higher per-worker startup overhead than Linux 'fork'. However,
+            # on a modern multi-core CPU (e.g. Ryzen 3700X with 8c/16t) that
+            # overhead is easily absorbed. 4 workers is the sweet spot:
+            #   - Enough to keep the GPU fed without any sequential idle gaps.
+            #   - Spawn overhead stays low (4 fresh interpreters vs e.g. 8).
+            #   - Leaves plenty of threads for the main training loop.
+            return min(4, max(1, self.cpu_count // 4))
+        # Linux / Mac: fork is cheap — use more workers, capped by CPU count
         optimal = min(self.cpu_count - 2, 8)
-        return max(2, optimal)  # At least 2 workers
+        return max(2, optimal)
     
     def to_dict(self) -> Dict:
         """Convert to dictionary"""
@@ -255,6 +285,11 @@ def detect_and_optimize(log_dir: str = "logs") -> 'HardwareProfile':
     for key, value in env_vars.items():
         os.environ[key] = value
         print(f"Set {key}={value}")
+
+    # Enable cuDNN benchmark for faster convolutions (since input sizes are constant)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        print("Enabled torch.backends.cudnn.benchmark=True for faster training")
 
     # Save profile using pathlib (cross-platform)
     log_path = Path(log_dir)

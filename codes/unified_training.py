@@ -152,6 +152,9 @@ class UnifiedTrainer:
             self.optimizer, mode='min', patience=5, factor=0.5
         )
         
+        # AMP Scaler for mixed precision training
+        self.scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
+        
         # Metrics tracking
         self.train_losses = []
         self.val_losses = []
@@ -186,17 +189,26 @@ class UnifiedTrainer:
         
         pbar = tqdm(self.train_loader, desc=f"Training {self.model_name}")
         for images, masks, _ in pbar:
-            images = images.to(self.config.DEVICE)
-            masks = masks.to(self.config.DEVICE)
+            images = images.to(self.config.DEVICE, non_blocking=True)
+            masks = masks.to(self.config.DEVICE, non_blocking=True)
             
-            # Forward pass
-            self.optimizer.zero_grad()
-            outputs = self.model(images)
-            loss = self.criterion(outputs, masks)
+            self.optimizer.zero_grad(set_to_none=True)
             
-            # Backward pass
-            loss.backward()
-            self.optimizer.step()
+            # Forward pass with Automatic Mixed Precision (AMP)
+            if self.scaler is not None:
+                with torch.amp.autocast('cuda'):
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, masks)
+                
+                # Backward pass
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                outputs = self.model(images)
+                loss = self.criterion(outputs, masks)
+                loss.backward()
+                self.optimizer.step()
             
             total_loss += loss.item()
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
@@ -219,17 +231,23 @@ class UnifiedTrainer:
         pbar = tqdm(self.val_loader, desc=f"Validating {self.model_name}")
         with torch.no_grad():
             for images, masks, _ in pbar:
-                images = images.to(self.config.DEVICE)
-                masks = masks.to(self.config.DEVICE)
+                images = images.to(self.config.DEVICE, non_blocking=True)
+                masks = masks.to(self.config.DEVICE, non_blocking=True)
                 
                 # Measure inference time
                 start_time = time.time()
-                outputs = self.model(images)
+                
+                if self.scaler is not None:
+                    with torch.amp.autocast('cuda'):
+                        outputs = self.model(images)
+                        loss = self.criterion(outputs, masks)
+                else:
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, masks)
+                    
                 inference_time = (time.time() - start_time) * 1000 / images.size(0)
                 inference_times.append(inference_time)
                 
-                # Calculate loss
-                loss = self.criterion(outputs, masks)
                 total_loss += loss.item()
                 
                 # Calculate IoU

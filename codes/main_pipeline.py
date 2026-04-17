@@ -6,6 +6,7 @@ Manages the complete training and benchmarking pipeline
 
 import sys
 import os
+import multiprocessing
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -102,13 +103,15 @@ class Pipeline:
         # Create data loaders for each model
         self.data_loaders = {}
         
+        shared_loader = None
         for model_name in ['unet', 'transunet', 'swin']:
             batch_size = self.hardware_profile.batch_sizes.get(model_name, 8)
             
-            train_loader, val_loader, train_ids, val_ids = create_data_loaders(
+            train_loader, val_loader, train_ids, val_ids, shared_loader = create_data_loaders(
                 self.config,
                 batch_size=batch_size,
-                num_workers=num_workers
+                num_workers=num_workers,
+                shared_data_loader=shared_loader
             )
             
             self.data_loaders[model_name] = {
@@ -407,4 +410,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # freeze_support() is required on Windows when the pipeline is packaged
+    # into a frozen executable (PyInstaller / cx_Freeze). It is a documented
+    # no-op on Linux/Mac and when running from a normal Python interpreter,
+    # so it is safe to always call it here.
+    multiprocessing.freeze_support()
     main()

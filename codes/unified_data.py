@@ -6,6 +6,7 @@ Supports multiple dataset directories (S1, S2, ..., S10)
 """
 
 import os
+import platform
 import numpy as np
 import pandas as pd
 import json
@@ -15,6 +16,16 @@ from typing import Dict, List, Tuple, Optional
 import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
+
+
+def _raw_to_celsius(raw):
+    """Convert raw thermal sensor value to degrees Celsius.
+
+    Defined at module level (not as a lambda) so that it is picklable
+    by the 'spawn' multiprocessing context used by DataLoader workers
+    on Windows and when CUDA is active on Linux/Mac.
+    """
+    return (raw / 100) - 273.15
 
 
 class Config:
@@ -33,8 +44,8 @@ class Config:
     LEARNING_RATE = 1e-4
     NUM_EPOCHS = 100
     
-    # Thermal conversion
-    RAW_TO_CELSIUS = np.vectorize(lambda raw: (raw / 100) - 273.15)
+    # Thermal conversion  (uses a named function – lambdas are not picklable)
+    RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
     
     # Region names
     REGION_NAMES = [
@@ -415,7 +426,8 @@ class ThermalFaceDataset(Dataset):
 
 
 def create_data_loaders(config: Config, batch_size: int, num_workers: int,
-                       test_size: float = 0.2, random_state: int = 42):
+                       test_size: float = 0.2, random_state: int = 42,
+                       shared_data_loader: MultiDirectoryDataLoader = None):
     """
     Create training and validation data loaders from all available datasets
     
@@ -425,13 +437,17 @@ def create_data_loaders(config: Config, batch_size: int, num_workers: int,
         num_workers: Number of data loading workers
         test_size: Fraction of data for validation
         random_state: Random seed for reproducibility
+        shared_data_loader: Optional preloaded data loader to skip discovering datasets again
     
     Returns:
-        train_loader, val_loader, train_ids, val_ids
+        train_loader, val_loader, train_ids, val_ids, data_loader
     """
-    # Load data from all directories
-    data_loader = MultiDirectoryDataLoader(config)
-    data_loader.load_annotations()
+    # Load data from all directories if not provided
+    if shared_data_loader is None:
+        data_loader = MultiDirectoryDataLoader(config)
+        data_loader.load_annotations()
+    else:
+        data_loader = shared_data_loader
     
     # Get all sample IDs and filter out missing
     raw_sample_ids = list(data_loader.all_polygons.keys())
@@ -444,9 +460,10 @@ def create_data_loaders(config: Config, batch_size: int, num_workers: int,
         else:
             missing_count += 1
             
-    if missing_count > 0:
-        print(f"\n⚠️  Filtered out {missing_count} samples with missing thermal images.")
-    
+    if shared_data_loader is None:
+        if missing_count > 0:
+            print(f"\n⚠️  Filtered out {missing_count} samples with missing thermal images.")
+            
     if not sample_ids:
         raise ValueError("No samples found in any dataset directory!")
     
@@ -455,17 +472,18 @@ def create_data_loaders(config: Config, batch_size: int, num_workers: int,
         sample_ids, test_size=test_size, random_state=random_state
     )
     
-    print(f"\nData Split:")
-    print(f"  Training samples:   {len(train_ids)}")
-    print(f"  Validation samples: {len(val_ids)}")
-    
-    # Count samples per dataset
-    print(f"\nSamples per dataset:")
-    for dataset_name in sorted(data_loader.datasets.keys()):
-        train_count = sum(1 for sid in train_ids if sid.startswith(dataset_name + '/'))
-        val_count = sum(1 for sid in val_ids if sid.startswith(dataset_name + '/'))
-        total_count = train_count + val_count
-        print(f"  {dataset_name}: {total_count} total ({train_count} train, {val_count} val)")
+    if shared_data_loader is None:    
+        print(f"\nData Split:")
+        print(f"  Training samples:   {len(train_ids)}")
+        print(f"  Validation samples: {len(val_ids)}")
+        
+        # Count samples per dataset
+        print(f"\nSamples per dataset:")
+        for dataset_name in sorted(data_loader.datasets.keys()):
+            train_count = sum(1 for sid in train_ids if sid.startswith(dataset_name + '/'))
+            val_count = sum(1 for sid in val_ids if sid.startswith(dataset_name + '/'))
+            total_count = train_count + val_count
+            print(f"  {dataset_name}: {total_count} total ({train_count} train, {val_count} val)")
     
     # Create datasets
     train_dataset = ThermalFaceDataset(
@@ -475,34 +493,68 @@ def create_data_loaders(config: Config, batch_size: int, num_workers: int,
         val_ids, data_loader, config, augment=False
     )
     
-    # Windows requires num_workers=0 to avoid multiprocessing spawn issues
-    import platform
-    if platform.system() == 'Windows' and num_workers > 0:
-        print("⚠️  Windows detected: setting num_workers=0 (required for DataLoader on Windows)")
-        num_workers = 0
+    # -------------------------------------------------------------------------
+    # DataLoader worker configuration
+    # -------------------------------------------------------------------------
+    # num_workers is already OS-aware: hardware_detector returns 2 for Windows
+    # and up to 8 for Linux/Mac (see HardwareProfile._calculate_workers).
+    #
+    # On all platforms with workers > 0 we explicitly request 'spawn' instead
+    # of letting Python choose the default start method:
+    #   - Windows default is already 'spawn', so this is a no-op there.
+    #   - Linux default is 'fork', which copies the CUDA context into every
+    #     worker and can cause silent corruption or hard deadlocks. 'spawn'
+    #     starts each worker with a fresh interpreter, avoiding this entirely.
+    #
+    # Prerequisites for workers > 0 on Windows (all satisfied):
+    #   1. if __name__ == '__main__' guard in main_pipeline.py       ✓
+    #   2. Dataset / Config / _raw_to_celsius are all picklable      ✓
+    #   3. multiprocessing_context='spawn' set below                 ✓
+    if num_workers > 0:
+        mp_context = 'spawn'
+        print(f"   DataLoader: {num_workers} worker(s), multiprocessing_context='spawn'")
+    else:
+        mp_context = None
+        print("   DataLoader: single-process mode (num_workers=0)")
+
+    # pin_memory speeds up host-to-GPU transfer; skip it when no GPU present.
+    pin_memory = torch.cuda.is_available()
+    persistent = num_workers > 0
 
     # Create dataloaders
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size,
-        shuffle=True, num_workers=num_workers,
-        pin_memory=True, persistent_workers=True if num_workers > 0 else False
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        multiprocessing_context=mp_context,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=batch_size,
-        shuffle=False, num_workers=num_workers,
-        pin_memory=True, persistent_workers=True if num_workers > 0 else False
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        multiprocessing_context=mp_context,
     )
-    
-    return train_loader, val_loader, train_ids, val_ids
+
+    return train_loader, val_loader, train_ids, val_ids, data_loader
 
 
 if __name__ == "__main__":
-    # Test data loading
+    # -----------------------------------------------------------------
+    # This guard is MANDATORY when num_workers > 0 on Windows.
+    # Without it, every spawned DataLoader worker re-imports this module
+    # and tries to spawn its own workers, causing a RuntimeError.
+    # -----------------------------------------------------------------
+    _test_workers = 0 if platform.system() == 'Windows' else 4
     config = Config()
-    train_loader, val_loader, train_ids, val_ids = create_data_loaders(
-        config, batch_size=8, num_workers=4
+    train_loader, val_loader, train_ids, val_ids, _ = create_data_loaders(
+        config, batch_size=8, num_workers=_test_workers
     )
-    
     print("\n✅ Multi-directory data loading test successful!")
     print(f"Train batches: {len(train_loader)}")
-    print(f"Val batches: {len(val_loader)}")
+    print(f"Val batches:   {len(val_loader)}")
