@@ -475,10 +475,16 @@ def create_data_loaders(config: Config, batch_size: int, num_workers: int,
         val_ids, data_loader, config, augment=False
     )
     
+    # Windows requires num_workers=0 to avoid multiprocessing spawn issues
+    import platform
+    if platform.system() == 'Windows' and num_workers > 0:
+        print("⚠️  Windows detected: setting num_workers=0 (required for DataLoader on Windows)")
+        num_workers = 0
+
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size,
-        shuffle=True, num_workers=num_workers, 
+        shuffle=True, num_workers=num_workers,
         pin_memory=True, persistent_workers=True if num_workers > 0 else False
     )
     val_loader = DataLoader(

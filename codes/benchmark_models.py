@@ -17,8 +17,12 @@ import time
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple
-from unified_data import Config, create_data_loaders
-from unified_training import calculate_iou, calculate_dice_score
+try:
+    from codes.unified_data import Config, create_data_loaders
+    from codes.unified_training import calculate_iou, calculate_dice_score
+except ImportError:
+    from unified_data import Config, create_data_loaders
+    from unified_training import calculate_iou, calculate_dice_score
 
 
 class ModelBenchmark:

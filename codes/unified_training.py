@@ -15,7 +15,10 @@ import time
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from unified_data import Config
+try:
+    from codes.unified_data import Config
+except ImportError:
+    from unified_data import Config
 
 
 class DiceLoss(nn.Module):

@@ -199,36 +199,35 @@ def extract_all_data(force: bool = False) -> bool:
     print("DATA EXTRACTION")
     print("=" * 80)
 
-    # Idempotency check
+    # Idempotency check — skip ZIP extraction but always run annotation generation
     if not force and _is_data_already_extracted():
-        print("✅ Data already extracted — skipping (use --force to re-extract)")
-        return True
+        print("✅ Data already extracted — skipping ZIP extraction (use --force to re-extract)")
+    else:
+        # Discover ZIP files
+        zip_files = _discover_zip_files()
+        if not zip_files:
+            # No ZIPs but data might already exist in another form
+            if DATA_DIR.exists() and any(DATA_DIR.iterdir()):
+                print("⚠️  No ZIP files found, but data/ is not empty — continuing")
+            else:
+                print("❌ No ZIP files and no existing data — cannot proceed")
+                return False
+        else:
+            # Extract each ZIP to a temporary directory, then process
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Discover ZIP files
-    zip_files = _discover_zip_files()
-    if not zip_files:
-        # No ZIPs but data might already exist in another form
-        if DATA_DIR.exists() and any(DATA_DIR.iterdir()):
-            print("⚠️  No ZIP files found, but data/ is not empty — continuing")
-            return True
-        print("❌ No ZIP files and no existing data — cannot proceed")
-        return False
+            for zip_path in zip_files:
+                print(f"\nExtracting {zip_path.name}...")
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_path = Path(tmp_dir)
 
-    # Extract each ZIP to a temporary directory, then process
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+                    if not _extract_zip(zip_path, tmp_path):
+                        print(f"❌ Failed to extract {zip_path.name}")
+                        continue
 
-    for zip_path in zip_files:
-        print(f"\nExtracting {zip_path.name}...")
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
+                    _process_extracted_contents(tmp_path)
 
-            if not _extract_zip(zip_path, tmp_path):
-                print(f"❌ Failed to extract {zip_path.name}")
-                continue
-
-            _process_extracted_contents(tmp_path)
-
-    # Generate bounding boxes and polygonal masks
+    # Always generate annotations — idempotent (skips datasets that already have them)
     print("\nGenerating annotations...")
     _generate_annotations()
 

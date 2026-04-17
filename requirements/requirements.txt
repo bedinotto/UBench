@@ -1,7 +1,10 @@
-# Core Deep Learning
-torch>=2.0.0
-torchvision>=0.15.0
-torchaudio>=2.0.0
+# Core Deep Learning (PyTorch)
+# NOTE: torch/torchvision/torchaudio are NOT listed here.
+# They must be installed with CUDA support via a special index URL.
+# This is handled automatically by codes/setup.py (install_pytorch_cuda step).
+# To install manually:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# See: https://pytorch.org/get-started/locally/
 
 # Computer Vision & Image Processing
 opencv-python>=4.8.0

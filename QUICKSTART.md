@@ -143,10 +143,24 @@ ls data/*_bounding_boxes.csv
 - Check for `S1_polygonal_masks.json` in data/
 - OR check for `polygonal_masks.json` inside data/S1/
 
-**"CUDA not available"**
-- Install/update NVIDIA drivers
-- Install CUDA toolkit
-- Reinstall PyTorch with CUDA
+**"CUDA not available" / Pipeline stops at hardware detection**
+This almost always means PyTorch was installed **without** CUDA support (`pip install torch` defaults to CPU-only).
+
+Check what you have:
+```cmd
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+If the second value is `False`:
+
+1. Make sure NVIDIA drivers are installed: run `nvidia-smi` in a terminal.
+   - If the command is not found → install drivers from https://www.nvidia.com/download/index.aspx, then **restart**.
+2. Reinstall PyTorch with the CUDA wheel:
+   ```cmd
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+   ```
+   (Use `cu118` instead of `cu121` if your driver is older and `nvidia-smi` shows CUDA < 12.x)
+3. Re-run `run.bat --skip-extract --skip-setup` (setup is now done).
+
 
 **"Minimum hardware requirements not met"**
 - You need GTX 1660 Ti (6GB) or better

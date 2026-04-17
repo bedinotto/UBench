@@ -24,19 +24,20 @@ except ImportError as e:
 class HardwareProfile:
     """Hardware profile with optimization parameters"""
     
-    def __init__(self, gpu_name: str, gpu_memory_gb: float, 
-                 cpu_count: int, ram_gb: float):
+    def __init__(self, gpu_name: str, gpu_memory_gb: float,
+                 cpu_count: int, ram_gb: float, os_type: str = ""):
         self.gpu_name = gpu_name
         self.gpu_memory_gb = gpu_memory_gb
         self.cpu_count = cpu_count
         self.ram_gb = ram_gb
+        self.os_type = os_type or platform.system()  # fallback to live detection
         self.batch_sizes = self._calculate_batch_sizes()
         self.num_workers = self._calculate_workers()
         
     def _calculate_batch_sizes(self) -> Dict[str, int]:
         """Calculate optimal batch sizes based on GPU memory"""
         if self.gpu_memory_gb < 5.5:
-            print("⚠️  WARNING: GPU memory below 6GB - may encounter issues")
+            print("[WARNING] GPU memory below 6GB - may encounter issues")
             return {"unet": 4, "transunet": 3, "swin": 3}
         elif self.gpu_memory_gb < 7:
             # GTX 1660 Ti baseline (6GB)
@@ -56,6 +57,9 @@ class HardwareProfile:
     
     def _calculate_workers(self) -> int:
         """Calculate optimal number of data loading workers"""
+        # Windows does not support multiprocessing with DataLoader in spawn context
+        if self.os_type == 'Windows':
+            return 0
         # Use at most 4 workers per GPU, capped by CPU count
         optimal = min(self.cpu_count - 2, 8)
         return max(2, optimal)  # At least 2 workers
@@ -121,26 +125,26 @@ class HardwareDetector:
         
         # Detect CUDA availability
         if not torch.cuda.is_available():
-            print("❌ ERROR: CUDA is not available!")
+            print("[ERROR] CUDA is not available!")
             print("   Please install CUDA-enabled PyTorch")
             print("   Visit: https://pytorch.org/get-started/locally/")
             sys.exit(1)
         
         # Get CUDA version
         cuda_version = torch.version.cuda
-        print(f"✅ CUDA Version: {cuda_version}")
+        print(f"[OK] CUDA Version: {cuda_version}")
         
         # Detect GPU
         gpu_info = self._detect_gpu()
         if gpu_info is None:
-            print("❌ ERROR: No compatible NVIDIA GPU detected!")
+            print("[ERROR] No compatible NVIDIA GPU detected!")
             sys.exit(1)
         
         gpu_name, gpu_memory_gb = gpu_info
         
         # Validate minimum requirements
         if not self._validate_gpu(gpu_name, gpu_memory_gb):
-            print(f"\n❌ ERROR: Minimum hardware requirements not met!")
+            print(f"\n[ERROR] Minimum hardware requirements not met!")
             print(f"   Minimum GPU: {self.MIN_GPU_NAME} ({self.MIN_GPU_MEMORY_GB} GB)")
             print(f"   Detected: {gpu_name} ({gpu_memory_gb:.1f} GB)")
             sys.exit(1)
@@ -154,10 +158,11 @@ class HardwareDetector:
         print(f"System RAM: {ram_gb:.1f} GB")
         
         if ram_gb < self.MIN_RAM_GB:
-            print(f"⚠️  WARNING: RAM below recommended {self.MIN_RAM_GB} GB")
+            print(f"[WARNING] RAM below recommended {self.MIN_RAM_GB} GB")
         
         # Create profile
-        self.profile = HardwareProfile(gpu_name, gpu_memory_gb, cpu_count, ram_gb)
+        self.profile = HardwareProfile(gpu_name, gpu_memory_gb, cpu_count, ram_gb,
+                                        os_type=self.os_type)
         
         print("\n" + "=" * 70)
         print(str(self.profile))
@@ -174,7 +179,7 @@ class HardwareDetector:
                 gpu = gpus[0]  # Use first GPU
                 gpu_name = gpu.name
                 gpu_memory_gb = gpu.memoryTotal / 1024  # Convert MB to GB
-                print(f"✅ GPU Detected: {gpu_name}")
+                print(f"[OK] GPU Detected: {gpu_name}")
                 print(f"   Memory: {gpu_memory_gb:.1f} GB")
                 return gpu_name, gpu_memory_gb
         except Exception as e:
@@ -186,7 +191,7 @@ class HardwareDetector:
                 gpu_name = torch.cuda.get_device_name(0)
                 # Get memory in bytes, convert to GB
                 gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-                print(f"✅ GPU Detected: {gpu_name}")
+                print(f"[OK] GPU Detected: {gpu_name}")
                 print(f"   Memory: {gpu_memory_gb:.1f} GB")
                 return gpu_name, gpu_memory_gb
         except Exception as e:
@@ -217,18 +222,18 @@ class HardwareDetector:
         if self.profile:
             with open(filepath, 'w') as f:
                 json.dump(self.profile.to_dict(), f, indent=2)
-            print(f"✅ Hardware profile saved to: {filepath}")
+            print(f"[OK] Hardware profile saved to: {filepath}")
     
     def get_cuda_env_vars(self) -> Dict[str, str]:
         """Get recommended CUDA environment variables"""
         env_vars = {
             "CUDA_VISIBLE_DEVICES": "0",
-            "PYTORCH_ALLOC_CONF": "max_split_size_mb:128",
+            "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128",
         }
         
         # Add more aggressive memory management for lower-end GPUs
         if self.profile and self.profile.gpu_memory_gb < 8:
-            env_vars["PYTORCH_ALLOC_CONF"] = "max_split_size_mb:64"
+            env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
         
         return env_vars
 
