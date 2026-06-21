@@ -7,6 +7,14 @@ logs/
 outputs/*
 codes/tests/*
 
+# Checkpoints & error logs (large binary artefacts — kept on disk only)
+outputs/**/checkpoints/
+error_log_*.txt
+
+
+# AI md files
+CLAUDE.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

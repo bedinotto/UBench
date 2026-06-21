@@ -1,3 +1,6 @@
+# NOTE: Git LFS (Large File Storage) is required to retrieve the dataset ZIP files.
+# Install Git LFS from https://git-lfs.com and run 'git lfs install && git lfs pull' if files are not fully downloaded.
+
 # Core Deep Learning (PyTorch)
 # NOTE: torch/torchvision/torchaudio are NOT listed here.
 # They must be installed with CUDA support via a special index URL.

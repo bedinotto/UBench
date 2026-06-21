@@ -48,6 +48,18 @@ def _is_data_already_extracted() -> bool:
     return False
 
 
+def _is_lfs_pointer(file_path: Path) -> bool:
+    """Check if a file is a Git LFS pointer instead of the actual data."""
+    if not file_path.is_file() or file_path.stat().st_size > 1024:
+        return False
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(100)
+            return "version https://git-lfs" in content
+    except Exception:
+        return False
+
+
 def _discover_zip_files() -> list:
     """Discover all .zip files in requirements/."""
     if not REQUIREMENTS_DIR.exists():
@@ -60,8 +72,11 @@ def _discover_zip_files() -> list:
     else:
         print(f"✅ Found {len(zip_files)} ZIP file(s) in requirements/:")
         for zf in zip_files:
-            size_mb = zf.stat().st_size / (1024 * 1024)
-            print(f"   - {zf.name} ({size_mb:.1f} MB)")
+            if _is_lfs_pointer(zf):
+                print(f"   - {zf.name} (Git LFS pointer file — missing actual content)")
+            else:
+                size_mb = zf.stat().st_size / (1024 * 1024)
+                print(f"   - {zf.name} ({size_mb:.1f} MB)")
 
     return zip_files
 
@@ -225,6 +240,15 @@ def extract_all_data(force: bool = False) -> bool:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
 
             for zip_path in zip_files:
+                if _is_lfs_pointer(zip_path):
+                    print(f"\n❌ CRITICAL ERROR: {zip_path.name} is a Git LFS pointer!")
+                    print("   The actual file has not been downloaded because Git LFS is not initialized.")
+                    print("   Please run the following commands in your terminal to fix this:")
+                    print("     git lfs install")
+                    print("     git lfs pull")
+                    print("")
+                    return False
+
                 print(f"\nExtracting {zip_path.name}...")
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_path = Path(tmp_dir)

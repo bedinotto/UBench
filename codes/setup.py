@@ -86,6 +86,57 @@ class SetupManager:
             print("❌ ERROR: pip is not available")
             print("   Please install pip: https://pip.pypa.io/en/stable/installation/")
             return False
+
+    def check_git_lfs(self):
+        """Verify Git LFS is installed and large files are downloaded"""
+        print("\nChecking Git LFS...")
+        
+        # 1. Check if git command is available
+        try:
+            subprocess.run(
+                ["git", "--version"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("⚠️  Warning: git command not found. Cannot verify Git LFS status.")
+            return True
+
+        # 2. Check if git lfs command is available
+        try:
+            result = subprocess.run(
+                ["git", "lfs", "version"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            print(f"✅ Git LFS available: {result.stdout.strip().splitlines()[0]}")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("⚠️  Warning: Git LFS command not found. Please ensure Git LFS is installed.")
+
+        # 3. Check if any zip file in requirements/ is a Git LFS pointer file
+        requirements_dir = self.project_root / "requirements"
+        if requirements_dir.exists():
+            zip_files = list(requirements_dir.glob("*.zip"))
+            for zip_file in zip_files:
+                if zip_file.is_file() and zip_file.stat().st_size < 1024:
+                    try:
+                        with open(zip_file, "r", encoding="utf-8", errors="ignore") as f:
+                            content = f.read(100)
+                            if "version https://git-lfs" in content:
+                                print(f"❌ ERROR: Git LFS pointer detected for {zip_file.name}!")
+                                print("   The actual file has not been downloaded because Git LFS is not initialized.")
+                                print("   Please run the following commands to pull the actual files:")
+                                print("     git lfs install")
+                                print("     git lfs pull")
+                                print("")
+                                return False
+                    except Exception:
+                        pass
+        
+        print("✅ Git LFS validation completed")
+        return True
     
     def upgrade_pip(self):
         """Upgrade pip to latest version"""
@@ -467,6 +518,10 @@ class SetupManager:
         
         # Step 2: Check pip
         if not self.check_pip():
+            return False
+        
+        # Step 2.5: Check Git LFS
+        if not self.check_git_lfs():
             return False
         
         # Step 3: Upgrade pip

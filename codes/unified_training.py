@@ -137,7 +137,10 @@ class UnifiedTrainer:
     Unified training pipeline for all models
     Ensures consistent training, validation, and metric tracking
     """
-    
+
+    # How many epoch checkpoints to keep on disk (older ones are pruned)
+    _CHECKPOINT_KEEP_LAST = 2
+
     def __init__(self, model: nn.Module, model_name: str,
                  train_loader: DataLoader, val_loader: DataLoader,
                  config: Config, learning_rate: float = 1e-4,
@@ -145,7 +148,7 @@ class UnifiedTrainer:
                  max_nan_tolerance: int = 50):
         """
         Initialize trainer
-        
+
         Args:
             model: PyTorch model to train
             model_name: Name of the model (for logging)
@@ -165,17 +168,21 @@ class UnifiedTrainer:
         self.num_epochs = num_epochs
         self.grad_clip_norm = grad_clip_norm
         self.max_nan_tolerance = max_nan_tolerance
-        
+
         # Loss and optimizer
         self.criterion = CombinedLoss()
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', patience=5, factor=0.5
         )
-        
-        # Disable mixed precision (AMP) on GTX 1660 Ti to prevent numerical instability and NaNs
-        self.scaler = None
-        
+
+        # Automatic Mixed Precision (AMP) — enabled on GPUs with reliable fp16
+        # Tensor Core support (RTX 20xx / 30xx / 40xx, A-series, etc.).
+        # GTX cards (e.g. GTX 1660 Ti, sm_75) are excluded: they lack
+        # dedicated fp16 Tensor Cores so AMP would give no speed gain and
+        # risks numerical instability in the softmax / loss path.
+        self.scaler = self._build_scaler(config)
+
         # Metrics tracking
         self.train_losses = []
         self.val_losses = []
@@ -184,14 +191,18 @@ class UnifiedTrainer:
         self.inference_times = []
         self.best_val_loss = float('inf')
         self.best_val_iou = 0.0
-        
+
         # Model parameters
         self.model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        
+
         # Training time
         self.training_start_time = None
         self.training_end_time = None
-        
+
+        # Checkpoint directory — lives inside the run-specific output directory
+        self._checkpoint_dir = config.OUTPUT_DIR / "checkpoints"
+        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
         print(f"\n{'='*70}")
         print(f"Initializing {model_name} Trainer")
         print(f"{'='*70}")
@@ -202,7 +213,151 @@ class UnifiedTrainer:
         print(f"Epochs: {num_epochs}")
         print(f"Learning Rate: {learning_rate}")
         print(f"Gradient Clip Norm: {grad_clip_norm}")
+        print(f"Checkpoint Dir: {self._checkpoint_dir}")
+        amp_status = "enabled" if self.scaler is not None else "disabled (GTX/CPU)"
+        print(f"AMP (fp16):      {amp_status}")
         print(f"{'='*70}\n")
+
+    # ------------------------------------------------------------------
+    # AMP helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_scaler(config) -> Optional[torch.cuda.amp.GradScaler]:
+        """
+        Return a GradScaler when the active GPU can benefit from AMP, else None.
+
+        Rules
+        -----
+        - CPU or no CUDA  → None (AMP only works on CUDA).
+        - GTX-class GPU   → None (no fp16 Tensor Cores; AMP = overhead with no gain).
+        - RTX / A-series  → GradScaler (sm ≥ 7.5 with true Tensor Core support).
+        """
+        if not torch.cuda.is_available() or str(config.DEVICE) == 'cpu':
+            return None
+
+        gpu_name = torch.cuda.get_device_name(0).upper()
+        major, _ = torch.cuda.get_device_capability(0)
+
+        # GTX Turing cards (sm_75) have fp16 hardware but no dedicated Tensor
+        # Core training pipelines — skip AMP to keep training numerically stable.
+        is_gtx = 'GTX' in gpu_name
+        if is_gtx or major < 7:
+            return None
+
+        return torch.cuda.amp.GradScaler()
+
+    # ------------------------------------------------------------------
+    # Checkpoint helpers
+    # ------------------------------------------------------------------
+
+    def _checkpoint_path(self, epoch: int) -> Path:
+        """Return the expected path for a given epoch checkpoint."""
+        return self._checkpoint_dir / f"{_safe_filename(self.model_name)}_epoch_{epoch:04d}.pth"
+
+    def _find_latest_checkpoint(self) -> Optional[Path]:
+        """Scan the checkpoint directory for the most recent epoch file."""
+        import glob
+        pattern = str(self._checkpoint_dir / f"{_safe_filename(self.model_name)}_epoch_*.pth")
+        candidates = sorted(glob.glob(pattern))
+        return Path(candidates[-1]) if candidates else None
+
+    def save_checkpoint(self, epoch: int, train_loss: float, val_loss: float) -> Path:
+        """
+        Save a full training checkpoint at the end of *epoch* (0-indexed).
+
+        The checkpoint contains everything needed to resume exactly where
+        training was interrupted:
+          - epoch index (the epoch just finished)
+          - model weights
+          - optimizer state
+          - scheduler state
+          - scaler state (AMP, may be None)
+          - all metric history up to this point
+          - best-so-far tracking scalars
+
+        Older checkpoints beyond `_CHECKPOINT_KEEP_LAST` are pruned to
+        avoid filling the disk with .pth files.
+
+        Returns
+        -------
+        Path to the saved checkpoint file.
+        """
+        ckpt_path = self._checkpoint_path(epoch)
+        checkpoint = {
+            # ── identity ──────────────────────────────────────────────
+            'epoch': epoch,
+            'model_name': self.model_name,
+            # ── learnable state ───────────────────────────────────────
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'scaler_state_dict': self.scaler.state_dict() if self.scaler is not None else None,
+            # ── loss snapshot ─────────────────────────────────────────
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            # ── metric history ────────────────────────────────────────
+            'train_losses': self.train_losses,
+            'val_losses': self.val_losses,
+            'val_ious': self.val_ious,
+            'val_dice_scores': self.val_dice_scores,
+            'inference_times': self.inference_times,
+            # ── best-so-far trackers ──────────────────────────────────
+            'best_val_loss': self.best_val_loss,
+            'best_val_iou': self.best_val_iou,
+        }
+        torch.save(checkpoint, ckpt_path)
+        print(f"  💾 Checkpoint saved: {ckpt_path.name}")
+
+        # Prune old checkpoints, keep the last N
+        import glob
+        pattern = str(self._checkpoint_dir / f"{_safe_filename(self.model_name)}_epoch_*.pth")
+        all_ckpts = sorted(glob.glob(pattern))
+        for old_ckpt in all_ckpts[: -self._CHECKPOINT_KEEP_LAST]:
+            try:
+                Path(old_ckpt).unlink()
+                print(f"  🗑️  Pruned old checkpoint: {Path(old_ckpt).name}")
+            except OSError:
+                pass  # Non-fatal if the file is already gone
+
+        return ckpt_path
+
+    def load_checkpoint(self, ckpt_path: Path) -> int:
+        """
+        Restore trainer state from *ckpt_path*.
+
+        Loads model weights, optimizer, scheduler, scaler, and all metric
+        history so that `train()` can continue seamlessly from where it
+        left off.
+
+        Returns
+        -------
+        The epoch index that was *last completed* (i.e. training should
+        resume from ``returned_epoch + 1``).
+        """
+        print(f"  ♻️  Resuming from checkpoint: {ckpt_path.name}")
+        checkpoint = torch.load(ckpt_path, map_location=self.config.DEVICE)
+
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        if self.scaler is not None and checkpoint.get('scaler_state_dict') is not None:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
+        # Restore metric histories
+        self.train_losses      = checkpoint.get('train_losses', [])
+        self.val_losses        = checkpoint.get('val_losses', [])
+        self.val_ious          = checkpoint.get('val_ious', [])
+        self.val_dice_scores   = checkpoint.get('val_dice_scores', [])
+        self.inference_times   = checkpoint.get('inference_times', [])
+        self.best_val_loss     = checkpoint.get('best_val_loss', float('inf'))
+        self.best_val_iou      = checkpoint.get('best_val_iou', 0.0)
+
+        last_epoch: int = checkpoint['epoch']
+        print(f"  ✅ Resumed at epoch {last_epoch + 1} "
+              f"(best val loss so far: {self.best_val_loss:.4f})")
+        return last_epoch
     
     def train_epoch(self) -> float:
         """Train for one epoch with gradient clipping and NaN protection"""
@@ -358,28 +513,41 @@ class UnifiedTrainer:
         return avg_loss, mean_iou, mean_dice, avg_inference_time
     
     def train(self):
-        """Full training loop with metrics logging"""
+        """Full training loop with per-epoch checkpointing and auto-resume."""
         print(f"\n{'='*70}")
         print(f"Starting Training: {self.model_name}")
         print(f"{'='*70}\n")
-        
+
         self.training_start_time = time.time()
-        
-        for epoch in range(self.num_epochs):
+
+        # ── Auto-resume: detect the latest checkpoint for this model ──
+        start_epoch = 0
+        latest_ckpt = self._find_latest_checkpoint()
+        if latest_ckpt is not None:
+            start_epoch = self.load_checkpoint(latest_ckpt) + 1
+            if start_epoch >= self.num_epochs:
+                print(f"  ⚠️  All {self.num_epochs} epochs already completed "
+                      f"— nothing to do. Call plot_training_history() or "
+                      f"save_metrics() to export results.")
+                self.training_end_time = time.time()
+                return
+        # ─────────────────────────────────────────────────────────────
+
+        for epoch in range(start_epoch, self.num_epochs):
             print(f"\nEpoch {epoch+1}/{self.num_epochs}")
             print("-" * 70)
-            
+
             # Train
             train_loss = self.train_epoch()
             self.train_losses.append(train_loss)
-            
+
             # Validate
             val_loss, val_iou, val_dice, inference_time = self.validate()
             self.val_losses.append(val_loss)
             self.val_ious.append(val_iou)
             self.val_dice_scores.append(val_dice)
             self.inference_times.append(inference_time)
-            
+
             # Print metrics
             print(f"\nMetrics:")
             print(f"  Train Loss:     {train_loss:.4f}")
@@ -387,13 +555,13 @@ class UnifiedTrainer:
             print(f"  Val mIoU:       {val_iou:.4f}")
             print(f"  Val Dice:       {val_dice:.4f}")
             print(f"  Inference Time: {inference_time:.2f} ms/image")
-            
+
             # Learning rate scheduling
             self.scheduler.step(val_loss)
             current_lr = self.optimizer.param_groups[0]['lr']
             print(f"  Learning Rate:  {current_lr:.6f}")
-            
-            # Save best model (based on validation loss)
+
+            # Save best model (weights-only, based on validation loss)
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 models_dir = self.config.OUTPUT_DIR / "models"
@@ -401,16 +569,20 @@ class UnifiedTrainer:
                 model_path = models_dir / f"best_{_safe_filename(self.model_name)}_model.pth"
                 torch.save(self.model.state_dict(), model_path)
                 print(f"  ✅ Saved best model to: {model_path}")
-            
+
             # Track best IoU
             if val_iou > self.best_val_iou:
                 self.best_val_iou = val_iou
-            
+
+            # ── Per-epoch checkpoint (full state — enables crash recovery) ──
+            self.save_checkpoint(epoch=epoch, train_loss=train_loss, val_loss=val_loss)
+            # ────────────────────────────────────────────────────────────────
+
             print("-" * 70)
-        
+
         self.training_end_time = time.time()
         training_duration = (self.training_end_time - self.training_start_time) / 60  # minutes
-        
+
         print(f"\n{'='*70}")
         print(f"✅ Training Completed: {self.model_name}")
         print(f"{'='*70}")

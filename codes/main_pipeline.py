@@ -7,6 +7,7 @@ Manages the complete training and benchmarking pipeline
 import sys
 import os
 import gc
+import traceback
 import multiprocessing
 import torch
 import torch.nn as nn
@@ -417,13 +418,13 @@ class Pipeline:
 
 
 def main():
-    """Main entry point"""
+    """Main entry point with global error catcher for crash-safe operation."""
     parser = argparse.ArgumentParser(
         description='Automated Training Pipeline for Thermal Face Detection'
     )
     parser.add_argument(
-        '--models', 
-        nargs='+', 
+        '--models',
+        nargs='+',
         choices=['unet', 'transunet', 'swin'],
         default=None,
         help='Models to train (default: all models)'
@@ -439,22 +440,51 @@ def main():
         default=100,
         help='Number of training epochs (default: 100)'
     )
-    
+
     args = parser.parse_args()
-    
+
     # Update epoch count if specified
     if args.epochs != 100:
         # This will be used by Config class
         os.environ['NUM_EPOCHS'] = str(args.epochs)
-    
+
     # Create and run pipeline
     pipeline = Pipeline(
         models_to_train=args.models,
         skip_benchmark=args.skip_benchmark
     )
-    
-    success = pipeline.run()
-    
+
+    # ── Global error catcher ─────────────────────────────────────────────
+    # Any unhandled exception (OOM, dimension mismatch, disk full, etc.) is
+    # written to a dedicated error log file so the exact traceback is never
+    # lost, even if stdout/stderr are redirected or the console window closes.
+    try:
+        success = pipeline.run()
+    except Exception as e:  # noqa: BLE001
+        tb_str = traceback.format_exc()
+
+        # Prefer the run-specific log dir; fall back to the repo root.
+        log_dir = Path(os.environ.get("UBENCH_LOG_DIR", "."))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        error_log_path = log_dir / f"error_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        with open(error_log_path, "w", encoding="utf-8") as f:
+            f.write(f"UBench Pipeline Fatal Error\n")
+            f.write(f"Occurred at: {datetime.now().isoformat()}\n")
+            f.write(f"Exception:   {type(e).__name__}: {e}\n")
+            f.write("=" * 70 + "\n\n")
+            f.write(tb_str)
+
+        # Echo to stderr so it is still visible in the console / log file.
+        print(f"\n\u274c FATAL ERROR — full traceback written to: {error_log_path}",
+              file=sys.stderr)
+        print(tb_str, file=sys.stderr)
+
+        # Re-raise so the process exits with a non-zero code, which lets any
+        # orchestrator / AI agent detect the failure automatically.
+        raise
+    # ─────────────────────────────────────────────────────────────────────
+
     sys.exit(0 if success else 1)
 
 
