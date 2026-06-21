@@ -62,7 +62,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo [WARNING] NVIDIA driver / nvidia-smi not found.
     echo ================================================================================
     echo   This project requires:
-    echo     - An NVIDIA GPU (GTX 1660 Ti 6 GB or better)
+    echo     - An NVIDIA GPU ^(GTX 1660 Ti 6 GB or better^)
     echo     - Up-to-date NVIDIA drivers  ^(installs nvidia-smi^)
     echo     - CUDA-enabled PyTorch       ^(installed automatically by setup^)
     echo.

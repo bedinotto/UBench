@@ -18,10 +18,10 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 try:
-    from codes.unified_data import Config, create_data_loaders
+    from codes.unified_data import Config, create_kfold_data_loaders
     from codes.unified_training import calculate_iou, calculate_dice_score, _safe_filename
 except ImportError:
-    from unified_data import Config, create_data_loaders
+    from unified_data import Config, create_kfold_data_loaders
     from unified_training import calculate_iou, calculate_dice_score, _safe_filename
 
 
@@ -189,6 +189,10 @@ class ModelBenchmark:
                 })
         
         df = pd.DataFrame(comparison_data)
+        
+        if df.empty:
+            print("\n⚠️  No models produced valid results — skipping comparison.")
+            return df
         
         # Save comparison table
         output_path = self.config.OUTPUT_DIR / "benchmark_comparison.csv"
@@ -409,9 +413,14 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
         model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_model.pth"
 
         if not model_path.exists():
-            print(f"⚠️  Model weights not found: {model_path}")
-            results_dict[model_name] = None
-            continue
+            # Fallback to fold 1 model
+            fold_1_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_fold_1_model.pth"
+            if fold_1_path.exists():
+                model_path = fold_1_path
+            else:
+                print(f"⚠️  Model weights not found (tried standard and fold-1 paths): {model_path}")
+                results_dict[model_name] = None
+                continue
 
         # Load model
         loaded_model = benchmark.load_model(model, model_name, model_path)

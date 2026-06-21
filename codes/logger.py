@@ -43,13 +43,22 @@ class _TeeStream:
     # -----------------------------------------------------------------
 
     def write(self, text: str) -> int:
-        # Always mirror to console as-is (preserves colours, progress bars …)
-        self._console.write(text)
+        try:
+            # Always mirror to console as-is (preserves colours, progress bars …)
+            self._console.write(text)
+        except UnicodeEncodeError:
+            encoding = getattr(self._console, 'encoding', 'ascii') or 'ascii'
+            clean_text = text.encode(encoding, errors='replace').decode(encoding)
+            self._console.write(clean_text)
 
-        if self._add_timestamps:
-            self._write_timestamped(text)
-        else:
-            self._log.write(text)
+        if self._log and not getattr(self._log, 'closed', False):
+            try:
+                if self._add_timestamps:
+                    self._write_timestamped(text)
+                else:
+                    self._log.write(text)
+            except ValueError:
+                pass
 
         return len(text)
 
@@ -59,15 +68,27 @@ class _TeeStream:
         while "\n" in self._line_buf:
             line, self._line_buf = self._line_buf.split("\n", 1)
             ts = datetime.now().strftime("%H:%M:%S")
-            self._log.write(f"[{ts}] {line}\n")
+            if self._log and not getattr(self._log, 'closed', False):
+                try:
+                    self._log.write(f"[{ts}] {line}\n")
+                except ValueError:
+                    pass
         # Flush any partial line without a timestamp so nothing is lost
         if self._line_buf:
-            self._log.write(self._line_buf)
+            if self._log and not getattr(self._log, 'closed', False):
+                try:
+                    self._log.write(self._line_buf)
+                except ValueError:
+                    pass
             self._line_buf = ""
 
     def flush(self):
         self._console.flush()
-        self._log.flush()
+        if self._log and not getattr(self._log, 'closed', False):
+            try:
+                self._log.flush()
+            except ValueError:
+                pass
 
     # -----------------------------------------------------------------
     # Proxy all other attribute accesses to the console stream so that

@@ -4,6 +4,7 @@ Unified Training Module
 Consistent training loops, loss functions, and metrics for all models
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -51,37 +52,52 @@ def _safe_filename(name: str) -> str:
 
 
 class DiceLoss(nn.Module):
-    """Dice Loss for segmentation"""
-    
+    """Dice Loss for segmentation.
+
+    NOTE: softmax on fp16 logits overflows (exp of large values → inf → NaN).
+    We explicitly cast to float32 before softmax to stay numerically stable
+    under AMP autocast.
+    """
+
     def __init__(self, smooth=1.0):
         super().__init__()
         self.smooth = smooth
-    
+
     def forward(self, pred, target):
-        pred = F.softmax(pred, dim=1)
+        # Cast to fp32 to prevent softmax overflow under AMP
+        pred = F.softmax(pred.float(), dim=1)
         target_one_hot = F.one_hot(target, pred.shape[1]).permute(0, 3, 1, 2).float()
-        
+
         intersection = (pred * target_one_hot).sum(dim=(2, 3))
         union = pred.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3))
-        
+
         dice = (2. * intersection + self.smooth) / (union + self.smooth)
         return 1 - dice.mean()
 
 
 class CombinedLoss(nn.Module):
-    """Combined Cross-Entropy and Dice Loss"""
-    
+    """Combined Cross-Entropy and Dice Loss.
+
+    The forward pass is wrapped with autocast(enabled=False) so that all
+    loss arithmetic runs in float32 regardless of the outer AMP context.
+    This prevents fp16 overflow in softmax (Dice) and log-sum-exp (CE).
+    """
+
     def __init__(self, ce_weight=0.5, dice_weight=0.5):
         super().__init__()
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
         self.ce_loss = nn.CrossEntropyLoss()
         self.dice_loss = DiceLoss()
-    
+
     def forward(self, pred, target):
-        ce = self.ce_loss(pred, target)
-        dice = self.dice_loss(pred, target)
-        return self.ce_weight * ce + self.dice_weight * dice
+        # Disable autocast so that all loss math runs in fp32
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+            # Ensure inputs are fp32 for numerically stable loss computation
+            pred = pred.float()
+            ce = self.ce_loss(pred, target)
+            dice = self.dice_loss(pred, target)
+            return self.ce_weight * ce + self.dice_weight * dice
 
 
 def calculate_iou(pred: torch.Tensor, target: torch.Tensor, num_classes: int) -> List[float]:
@@ -125,7 +141,8 @@ class UnifiedTrainer:
     def __init__(self, model: nn.Module, model_name: str,
                  train_loader: DataLoader, val_loader: DataLoader,
                  config: Config, learning_rate: float = 1e-4,
-                 num_epochs: int = 100):
+                 num_epochs: int = 100, grad_clip_norm: float = 1.0,
+                 max_nan_tolerance: int = 50):
         """
         Initialize trainer
         
@@ -137,6 +154,8 @@ class UnifiedTrainer:
             config: Configuration object
             learning_rate: Learning rate
             num_epochs: Number of training epochs
+            grad_clip_norm: Maximum gradient norm for clipping (stabilises AMP)
+            max_nan_tolerance: Abort training after this many consecutive NaN batches
         """
         self.model = model.to(config.DEVICE)
         self.model_name = model_name
@@ -144,6 +163,8 @@ class UnifiedTrainer:
         self.val_loader = val_loader
         self.config = config
         self.num_epochs = num_epochs
+        self.grad_clip_norm = grad_clip_norm
+        self.max_nan_tolerance = max_nan_tolerance
         
         # Loss and optimizer
         self.criterion = CombinedLoss()
@@ -152,8 +173,8 @@ class UnifiedTrainer:
             self.optimizer, mode='min', patience=5, factor=0.5
         )
         
-        # AMP Scaler for mixed precision training
-        self.scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
+        # Disable mixed precision (AMP) on GTX 1660 Ti to prevent numerical instability and NaNs
+        self.scaler = None
         
         # Metrics tracking
         self.train_losses = []
@@ -180,12 +201,15 @@ class UnifiedTrainer:
         print(f"Val Batches: {len(val_loader)}")
         print(f"Epochs: {num_epochs}")
         print(f"Learning Rate: {learning_rate}")
+        print(f"Gradient Clip Norm: {grad_clip_norm}")
         print(f"{'='*70}\n")
     
     def train_epoch(self) -> float:
-        """Train for one epoch"""
+        """Train for one epoch with gradient clipping and NaN protection"""
         self.model.train()
-        total_loss = 0
+        total_loss = 0.0
+        valid_batches = 0
+        consecutive_nan = 0
         
         pbar = tqdm(self.train_loader, desc=f"Training {self.model_name}")
         for images, masks, _ in pbar:
@@ -200,20 +224,80 @@ class UnifiedTrainer:
                     outputs = self.model(images)
                     loss = self.criterion(outputs, masks)
                 
-                # Backward pass
+                # NaN protection: skip backward pass if loss is NaN/Inf
+                if not math.isfinite(loss.item()):
+                    consecutive_nan += 1
+                    if consecutive_nan == 1:
+                        print("\n=== DEBUG NaN DETECTED ===")
+                        print(f"Model: {self.model_name}")
+                        print(f"Images: min={images.min().item():.4f}, max={images.max().item():.4f}, has_nan={torch.isnan(images).any().item()}")
+                        print(f"Masks: min={masks.min().item()}, max={masks.max().item()}, unique={torch.unique(masks).tolist()}, has_nan={torch.isnan(masks).any().item()}")
+                        print(f"Outputs: min={outputs.min().item():.4f}, max={outputs.max().item():.4f}, has_nan={torch.isnan(outputs).any().item()}")
+                        try:
+                            with torch.amp.autocast('cuda', enabled=False):
+                                pred_float = outputs.float()
+                                ce_val = self.criterion.ce_loss(pred_float, masks).item()
+                                dice_val = self.criterion.dice_loss(pred_float, masks).item()
+                                print(f"Loss components (FP32): CE={ce_val:.4f}, Dice={dice_val:.4f}")
+                        except Exception as e:
+                            print(f"Error computing loss components: {e}")
+                        print("==========================\n")
+                    pbar.set_postfix({'loss': 'NaN', 'nan_streak': consecutive_nan})
+                    if consecutive_nan >= self.max_nan_tolerance:
+                        raise RuntimeError(
+                            f"{self.model_name}: {consecutive_nan} consecutive NaN losses. "
+                            f"Training is numerically unstable — aborting."
+                        )
+                    continue
+                consecutive_nan = 0
+                
+                # Backward pass with gradient clipping (AMP-compatible)
                 self.scaler.scale(loss).backward()
+                # Unscale gradients before clipping so the threshold is in fp32 scale
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 outputs = self.model(images)
                 loss = self.criterion(outputs, masks)
+                
+                if not math.isfinite(loss.item()):
+                    consecutive_nan += 1
+                    if consecutive_nan == 1:
+                        print("\n=== DEBUG NaN DETECTED ===")
+                        print(f"Model: {self.model_name}")
+                        print(f"Images: min={images.min().item():.4f}, max={images.max().item():.4f}, has_nan={torch.isnan(images).any().item()}")
+                        print(f"Masks: min={masks.min().item()}, max={masks.max().item()}, unique={torch.unique(masks).tolist()}, has_nan={torch.isnan(masks).any().item()}")
+                        print(f"Outputs: min={outputs.min().item():.4f}, max={outputs.max().item():.4f}, has_nan={torch.isnan(outputs).any().item()}")
+                        try:
+                            pred_float = outputs.float()
+                            ce_val = self.criterion.ce_loss(pred_float, masks).item()
+                            dice_val = self.criterion.dice_loss(pred_float, masks).item()
+                            print(f"Loss components (FP32): CE={ce_val:.4f}, Dice={dice_val:.4f}")
+                        except Exception as e:
+                            print(f"Error computing loss components: {e}")
+                        print("==========================\n")
+                    pbar.set_postfix({'loss': 'NaN', 'nan_streak': consecutive_nan})
+                    if consecutive_nan >= self.max_nan_tolerance:
+                        raise RuntimeError(
+                            f"{self.model_name}: {consecutive_nan} consecutive NaN losses. "
+                            f"Training is numerically unstable — aborting."
+                        )
+                    continue
+                consecutive_nan = 0
+                
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
             
             total_loss += loss.item()
+            valid_batches += 1
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
-        return total_loss / len(self.train_loader)
+        if valid_batches == 0:
+            return float('nan')
+        return total_loss / valid_batches
     
     def validate(self) -> Tuple[float, float, float, float]:
         """

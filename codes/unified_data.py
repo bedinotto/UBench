@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import torch
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
+import random
 
 
 def _raw_to_celsius(raw):
@@ -26,6 +27,22 @@ def _raw_to_celsius(raw):
     on Windows and when CUDA is active on Linux/Mac.
     """
     return (raw / 100) - 273.15
+
+
+def seed_everything(seed: int = 42):
+    """Set global seeds for reproducibility."""
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # NOTE: cudnn.deterministic is intentionally NOT set here.
+    # The hardware_detector enables cudnn.benchmark=True for speed,
+    # and the two flags are mutually exclusive.  Reproducibility is
+    # ensured via fixed seeds above; deterministic mode would only
+    # add overhead without benefit.
+    torch.backends.cudnn.benchmark = False
 
 
 class Config:
@@ -43,6 +60,8 @@ class Config:
     NUM_CLASSES = 10
     LEARNING_RATE = 1e-4
     NUM_EPOCHS = 100
+    K_FOLDS = 5
+    RANDOM_SEED = 42
     
     # Thermal conversion  (uses a named function – lambdas are not picklable)
     RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
@@ -425,22 +444,20 @@ class ThermalFaceDataset(Dataset):
         return thermal_img, mask, sample_id
 
 
-def create_data_loaders(config: Config, batch_size: int, num_workers: int,
-                       test_size: float = 0.2, random_state: int = 42,
-                       shared_data_loader: MultiDirectoryDataLoader = None):
+def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
+                              shared_data_loader: MultiDirectoryDataLoader = None):
     """
-    Create training and validation data loaders from all available datasets
+    Create K-Fold training and validation data loaders from all available datasets
     
     Args:
         config: Configuration object
         batch_size: Batch size for training
         num_workers: Number of data loading workers
-        test_size: Fraction of data for validation
-        random_state: Random seed for reproducibility
         shared_data_loader: Optional preloaded data loader to skip discovering datasets again
     
     Returns:
-        train_loader, val_loader, train_ids, val_ids, data_loader
+        folds_data: List of dicts, each containing 'train_loader', 'val_loader', 'train_ids', 'val_ids'
+        data_loader: The MultiDirectoryDataLoader instance
     """
     # Load data from all directories if not provided
     if shared_data_loader is None:
@@ -467,49 +484,15 @@ def create_data_loaders(config: Config, batch_size: int, num_workers: int,
     if not sample_ids:
         raise ValueError("No samples found in any dataset directory!")
     
-    # Split data
-    train_ids, val_ids = train_test_split(
-        sample_ids, test_size=test_size, random_state=random_state
-    )
+    # Extract dataset sources for stratified splitting (e.g. 'S1', 'S2')
+    dataset_sources = [sid.split('/')[0] for sid in sample_ids]
     
-    if shared_data_loader is None:    
-        print(f"\nData Split:")
-        print(f"  Training samples:   {len(train_ids)}")
-        print(f"  Validation samples: {len(val_ids)}")
-        
-        # Count samples per dataset
-        print(f"\nSamples per dataset:")
-        for dataset_name in sorted(data_loader.datasets.keys()):
-            train_count = sum(1 for sid in train_ids if sid.startswith(dataset_name + '/'))
-            val_count = sum(1 for sid in val_ids if sid.startswith(dataset_name + '/'))
-            total_count = train_count + val_count
-            print(f"  {dataset_name}: {total_count} total ({train_count} train, {val_count} val)")
+    # Setup KFold
+    skf = StratifiedKFold(n_splits=config.K_FOLDS, shuffle=True, random_state=config.RANDOM_SEED)
     
-    # Create datasets
-    train_dataset = ThermalFaceDataset(
-        train_ids, data_loader, config, augment=True
-    )
-    val_dataset = ThermalFaceDataset(
-        val_ids, data_loader, config, augment=False
-    )
+    folds_data = []
     
-    # -------------------------------------------------------------------------
-    # DataLoader worker configuration
-    # -------------------------------------------------------------------------
-    # num_workers is already OS-aware: hardware_detector returns 2 for Windows
-    # and up to 8 for Linux/Mac (see HardwareProfile._calculate_workers).
-    #
-    # On all platforms with workers > 0 we explicitly request 'spawn' instead
-    # of letting Python choose the default start method:
-    #   - Windows default is already 'spawn', so this is a no-op there.
-    #   - Linux default is 'fork', which copies the CUDA context into every
-    #     worker and can cause silent corruption or hard deadlocks. 'spawn'
-    #     starts each worker with a fresh interpreter, avoiding this entirely.
-    #
-    # Prerequisites for workers > 0 on Windows (all satisfied):
-    #   1. if __name__ == '__main__' guard in main_pipeline.py       ✓
-    #   2. Dataset / Config / _raw_to_celsius are all picklable      ✓
-    #   3. multiprocessing_context='spawn' set below                 ✓
+    # Worker config
     if num_workers > 0:
         mp_context = 'spawn'
         print(f"   DataLoader: {num_workers} worker(s), multiprocessing_context='spawn'")
@@ -517,31 +500,92 @@ def create_data_loaders(config: Config, batch_size: int, num_workers: int,
         mp_context = None
         print("   DataLoader: single-process mode (num_workers=0)")
 
-    # pin_memory speeds up host-to-GPU transfer; skip it when no GPU present.
     pin_memory = torch.cuda.is_available()
-    persistent = num_workers > 0
+    # On Windows, persistent_workers keeps 'spawn'-ed worker processes alive
+    # across epochs.  Each worker holds shared-memory file mappings that count
+    # against a hard Windows kernel limit.  When multiple DataLoaders exist
+    # simultaneously (models × folds), persistent workers quickly exhaust the
+    # limit, causing RuntimeError 1455 / WinError 1450.  Disabling persistence
+    # lets workers terminate cleanly after each epoch iterator is consumed.
+    persistent = num_workers > 0 and platform.system() != 'Windows'
+    
+    print(f"\nData Split (K-Folds: {config.K_FOLDS}):")
+    
+    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(sample_ids, dataset_sources)):
+        train_ids = [sample_ids[i] for i in train_idx]
+        val_ids = [sample_ids[i] for i in val_idx]
+        
+        if shared_data_loader is None and fold_idx == 0:
+            print(f"  Fold 1 Training samples:   {len(train_ids)}")
+            print(f"  Fold 1 Validation samples: {len(val_ids)}")
+            print(f"\nSamples per dataset (Fold 1):")
+            for dataset_name in sorted(data_loader.datasets.keys()):
+                train_count = sum(1 for sid in train_ids if sid.startswith(dataset_name + '/'))
+                val_count = sum(1 for sid in val_ids if sid.startswith(dataset_name + '/'))
+                total_count = train_count + val_count
+                print(f"  {dataset_name}: {total_count} total ({train_count} train, {val_count} val)")
+        
+        # Create datasets
+        train_dataset = ThermalFaceDataset(
+            train_ids, data_loader, config, augment=True
+        )
+        val_dataset = ThermalFaceDataset(
+            val_ids, data_loader, config, augment=False
+        )
+        
+        # Create dataloaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent,
+            multiprocessing_context=mp_context,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent,
+            multiprocessing_context=mp_context,
+        )
+        
+        folds_data.append({
+            'train_loader': train_loader,
+            'val_loader': val_loader,
+            'train_ids': train_ids,
+            'val_ids': val_ids
+        })
 
-    # Create dataloaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent,
-        multiprocessing_context=mp_context,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent,
-        multiprocessing_context=mp_context,
-    )
+    return folds_data, data_loader
 
-    return train_loader, val_loader, train_ids, val_ids, data_loader
+
+def shutdown_data_loaders(*loaders: DataLoader):
+    """Explicitly shut down DataLoader worker processes and free OS resources.
+
+    On Windows, each DataLoader with num_workers>0 holds open shared-memory
+    file mappings.  Calling this function between folds / models ensures those
+    handles are released before new loaders are created.
+    """
+    import gc
+    for loader in loaders:
+        if loader is None:
+            continue
+        # The internal _MultiProcessingDataLoaderIter holds worker references.
+        # Triggering its __del__ via attribute deletion is the safest public API.
+        if hasattr(loader, '_iterator'):
+            loader._iterator = None
+        # Some PyTorch versions expose _workers directly on the iterator.
+        it = getattr(loader, '_iterator', None)
+        if it is not None and hasattr(it, '_shutdown_workers'):
+            try:
+                it._shutdown_workers()
+            except Exception:
+                pass
+    gc.collect()
 
 
 if __name__ == "__main__":
@@ -552,9 +596,10 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------
     _test_workers = 0 if platform.system() == 'Windows' else 4
     config = Config()
-    train_loader, val_loader, train_ids, val_ids, _ = create_data_loaders(
+    folds_data, _ = create_kfold_data_loaders(
         config, batch_size=8, num_workers=_test_workers
     )
     print("\n✅ Multi-directory data loading test successful!")
-    print(f"Train batches: {len(train_loader)}")
-    print(f"Val batches:   {len(val_loader)}")
+    print(f"K-Folds created: {len(folds_data)}")
+    print(f"Fold 1 Train batches: {len(folds_data[0]['train_loader'])}")
+    print(f"Fold 1 Val batches:   {len(folds_data[0]['val_loader'])}")

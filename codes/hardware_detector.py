@@ -83,14 +83,14 @@ class HardwareProfile:
           3. DataLoader uses multiprocessing_context='spawn'        ✓
         """
         if self.os_type == 'Windows':
-            # On Windows, DataLoader uses the 'spawn' start method which has
-            # higher per-worker startup overhead than Linux 'fork'. However,
-            # on a modern multi-core CPU (e.g. Ryzen 3700X with 8c/16t) that
-            # overhead is easily absorbed. 4 workers is the sweet spot:
-            #   - Enough to keep the GPU fed without any sequential idle gaps.
-            #   - Spawn overhead stays low (4 fresh interpreters vs e.g. 8).
-            #   - Leaves plenty of threads for the main training loop.
-            return min(4, max(1, self.cpu_count // 4))
+            # On Windows, DataLoader uses the 'spawn' start method which
+            # creates a brand-new Python interpreter per worker.  Each
+            # worker holds shared-memory file mappings that count against
+            # a Windows kernel limit.  With multiple models × folds, the
+            # total worker count across live DataLoaders accumulates fast.
+            # 2 workers is the safe sweet spot: enough to overlap I/O
+            # with GPU compute, without exhausting OS resources.
+            return min(2, max(1, self.cpu_count // 4))
         # Linux / Mac: fork is cheap — use more workers, capped by CPU count
         optimal = min(self.cpu_count - 2, 8)
         return max(2, optimal)
