@@ -98,6 +98,8 @@ class Config:
         self._create_output_dirs()
         if 'NUM_EPOCHS' in os.environ:
             self.NUM_EPOCHS = int(os.environ['NUM_EPOCHS'])
+        if 'K_FOLDS' in os.environ:
+            self.K_FOLDS = int(os.environ['K_FOLDS'])
     
     def _validate_paths(self):
         """Validate required data paths exist"""
@@ -488,7 +490,16 @@ def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
     dataset_sources = [sid.split('/')[0] for sid in sample_ids]
     
     # Setup KFold
-    skf = StratifiedKFold(n_splits=config.K_FOLDS, shuffle=True, random_state=config.RANDOM_SEED)
+    if 'LIMIT_SAMPLES' in os.environ:
+        limit = int(os.environ['LIMIT_SAMPLES'])
+        sample_ids = sample_ids[:limit]
+        dataset_sources = dataset_sources[:limit]
+        from sklearn.model_selection import KFold
+        skf = KFold(n_splits=config.K_FOLDS, shuffle=True, random_state=config.RANDOM_SEED)
+        split_generator = skf.split(sample_ids)
+    else:
+        skf = StratifiedKFold(n_splits=config.K_FOLDS, shuffle=True, random_state=config.RANDOM_SEED)
+        split_generator = skf.split(sample_ids, dataset_sources)
     
     folds_data = []
     
@@ -511,7 +522,7 @@ def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
     
     print(f"\nData Split (K-Folds: {config.K_FOLDS}):")
     
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(sample_ids, dataset_sources)):
+    for fold_idx, (train_idx, val_idx) in enumerate(split_generator):
         train_ids = [sample_ids[i] for i in train_idx]
         val_ids = [sample_ids[i] for i in val_idx]
         

@@ -27,13 +27,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Import config and loaders
 try:
-    from codes.unified_data import Config, create_data_loaders
+    from codes.unified_data import Config, create_kfold_data_loaders
     from codes.unified_training import calculate_iou, calculate_dice_score, _safe_filename
     import codes.unet_v2 as unet_v2
     import codes.transunet as transunet
     import codes.swin_unet_plus_plus as swin_unet_plus_plus
 except ImportError:
-    from unified_data import Config, create_data_loaders
+    from unified_data import Config, create_kfold_data_loaders
     from unified_training import calculate_iou, calculate_dice_score, _safe_filename
     import unet_v2 as unet_v2
     import transunet as transunet
@@ -220,9 +220,13 @@ def main():
     # Load dataset validation images
     print("\n📦 Initializing Data Loaders...")
     # Single worker since it's just prediction
-    _, val_loader, _, val_ids, data_loader = create_data_loaders(
+    folds_data, data_loader = create_kfold_data_loaders(
         config, batch_size=1, num_workers=0
     )
+    # Use validation data from the first fold
+    fold = folds_data[0]
+    val_loader = fold['val_loader']
+    val_ids = fold['val_ids']
     val_dataset = val_loader.dataset
     
     # Select images to compare

@@ -18,11 +18,12 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 try:
-    from codes.unified_data import Config, create_kfold_data_loaders
+    from codes.unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
     from codes.unified_training import calculate_iou, calculate_dice_score, _safe_filename
 except ImportError:
-    from unified_data import Config, create_kfold_data_loaders
+    from unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
     from unified_training import calculate_iou, calculate_dice_score, _safe_filename
+
 
 
 class ModelBenchmark:
@@ -392,14 +393,16 @@ class ModelBenchmark:
 
 
 def run_benchmark(models_dict: Dict[str, nn.Module], config: Config, 
-                 val_loader: DataLoader) -> pd.DataFrame:
+                 val_loaders_dict: Dict[str, List[DataLoader]] = None,
+                 val_loader: DataLoader = None) -> pd.DataFrame:
     """
-    Run complete benchmark suite
+    Run complete benchmark suite, aggregating metrics across all folds if multiple loaders are provided.
     
     Args:
         models_dict: Dictionary of {model_name: model_instance}
         config: Configuration object
-        val_loader: Validation data loader
+        val_loaders_dict: Dict mapping model_name to list of DataLoaders (one per fold)
+        val_loader: Fallback validation data loader (used if val_loaders_dict is not provided)
     
     Returns:
         Comparison dataframe
@@ -407,43 +410,129 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
     benchmark = ModelBenchmark(config)
     results_dict = {}
     
-    # Benchmark each model
     for model_name, model in models_dict.items():
-        # Use the same safe-name logic as unified_training so the path matches
-        model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_model.pth"
-
-        if not model_path.exists():
-            # Fallback to fold 1 model
-            fold_1_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_fold_1_model.pth"
-            if fold_1_path.exists():
-                model_path = fold_1_path
-            else:
-                print(f"⚠️  Model weights not found (tried standard and fold-1 paths): {model_path}")
+        fold_results = []
+        num_folds = config.K_FOLDS
+        
+        # Determine loaders for this model
+        loaders = []
+        if val_loaders_dict and model_name in val_loaders_dict:
+            loaders = val_loaders_dict[model_name]
+        
+        # If no fold loaders are provided, fall back to evaluating fold 1 or standard model path using val_loader
+        if not loaders:
+            model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_model.pth"
+            if not model_path.exists():
+                fold_1_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_fold_1_model.pth"
+                if fold_1_path.exists():
+                    model_path = fold_1_path
+            
+            if not model_path.exists():
+                print(f"⚠️  Model weights not found for {model_name} (tried standard and fold-1 paths)")
                 results_dict[model_name] = None
                 continue
-
-        # Load model
-        loaded_model = benchmark.load_model(model, model_name, model_path)
-
-        # Run benchmark
-        results = benchmark.benchmark_model(loaded_model, model_name, val_loader)
-        results_dict[model_name] = results
-
-        # Save individual results to LOG_DIR
-        if results:
-            log_dir = config.LOG_DIR
-            log_dir.mkdir(parents=True, exist_ok=True)
-            results_path = log_dir / f"{_safe_filename(model_name)}_benchmark.json"
-            with open(results_path, 'w', encoding='utf-8') as f:
-                # Convert numpy types to Python types for JSON serialization
-                serializable_results = {
-                    k: (v.tolist() if isinstance(v, np.ndarray)
-                        else float(v) if isinstance(v, (np.float32, np.float64))
-                        else v)
-                    for k, v in results.items()
-                }
-                json.dump(serializable_results, f, indent=2)
-    
+                
+            loaded_model = benchmark.load_model(model, model_name, model_path)
+            if loaded_model is not None and val_loader is not None:
+                results = benchmark.benchmark_model(loaded_model, model_name, val_loader)
+                results_dict[model_name] = results
+            else:
+                results_dict[model_name] = None
+            continue
+            
+        # Iterate over all folds
+        for fold_idx in range(num_folds):
+            # Check model name pattern fold_1, fold_2 etc.
+            fold_suffix = f"_fold_{fold_idx + 1}"
+            model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}{fold_suffix}_model.pth"
+            
+            if not model_path.exists():
+                # Fallback to alternative model name format used during training: f"{model_name}_Fold-{fold_idx + 1}"
+                alt_model_name = f"{model_name}_Fold-{fold_idx + 1}"
+                model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(alt_model_name)}_model.pth"
+                
+            if not model_path.exists():
+                print(f"⚠️  Model weights not found for {model_name} Fold {fold_idx + 1} at {model_path}")
+                continue
+                
+            loaded_model = benchmark.load_model(model, f"{model_name} (Fold {fold_idx + 1})", model_path)
+            if loaded_model is None:
+                continue
+                
+            fold_loader = loaders[fold_idx]
+            results = benchmark.benchmark_model(loaded_model, f"{model_name}_Fold_{fold_idx + 1}", fold_loader)
+            if results:
+                fold_results.append(results)
+                
+            # Clean up fold loader resources and GPU memory after this evaluation
+            shutdown_data_loaders(fold_loader)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+        if not fold_results:
+            print(f"⚠️  No valid fold results for model {model_name}")
+            results_dict[model_name] = None
+            continue
+            
+        # Aggregate results across folds
+        avg_loss = np.mean([r["avg_loss"] for r in fold_results])
+        mean_iou = np.mean([r["mean_iou"] for r in fold_results])
+        std_iou = np.std([r["mean_iou"] for r in fold_results])  # cross-fold variance of mIoU
+        mean_dice = np.mean([r["mean_dice"] for r in fold_results])
+        std_dice = np.std([r["mean_dice"] for r in fold_results])  # cross-fold variance of Dice
+        mean_inference_time = np.mean([r["mean_inference_time_ms"] for r in fold_results])
+        std_inference_time = np.std([r["mean_inference_time_ms"] for r in fold_results])
+        fps = 1000.0 / mean_inference_time if mean_inference_time > 0 else 0.0
+        peak_memory_mb = np.mean([r["peak_memory_mb"] for r in fold_results])
+        
+        # Aggregate per-class IoU means and stds across folds
+        class_iou_means = []
+        class_iou_stds = []
+        for cls_idx in range(config.NUM_CLASSES):
+            cls_vals = [r["class_iou_means"][cls_idx] for r in fold_results]
+            class_iou_means.append(float(np.mean(cls_vals)))
+            class_iou_stds.append(float(np.std(cls_vals)))
+            
+        aggregated_results = {
+            "model_name": model_name,
+            "model_params": fold_results[0]["model_params"],
+            "model_size_mb": fold_results[0]["model_size_mb"],
+            "avg_loss": float(avg_loss),
+            "mean_iou": float(mean_iou),
+            "std_iou": float(std_iou),
+            "mean_dice": float(mean_dice),
+            "std_dice": float(std_dice),
+            "mean_inference_time_ms": float(mean_inference_time),
+            "std_inference_time_ms": float(std_inference_time),
+            "fps": float(fps),
+            "peak_memory_mb": float(peak_memory_mb),
+            "class_iou_means": class_iou_means,
+            "class_iou_stds": class_iou_stds,
+        }
+        
+        results_dict[model_name] = aggregated_results
+        
+        # Print aggregated results
+        print(f"\n==============================================================")
+        print(f"Aggregated Cross-Fold Results for {model_name} ({len(fold_results)}/{num_folds} Folds):")
+        print(f"==============================================================")
+        print(f"  Model Params:    {aggregated_results['model_params']:,} ({aggregated_results['model_size_mb']:.2f} MB)")
+        print(f"  Mean IoU:        {aggregated_results['mean_iou']:.4f} ± {aggregated_results['std_iou']:.4f}")
+        print(f"  Mean Dice:       {aggregated_results['mean_dice']:.4f} ± {aggregated_results['std_dice']:.4f}")
+        print(f"  Inference Time:  {aggregated_results['mean_inference_time_ms']:.2f} ± {aggregated_results['std_inference_time_ms']:.2f} ms")
+        print(f"  FPS:             {aggregated_results['fps']:.2f}")
+        print(f"  Avg Loss:        {aggregated_results['avg_loss']:.4f}")
+        if torch.cuda.is_available():
+            print(f"  Peak GPU Memory: {aggregated_results['peak_memory_mb']:.2f} MB")
+        print(f"==============================================================\n")
+        
+        # Save individual aggregated results to LOG_DIR
+        log_dir = config.LOG_DIR
+        log_dir.mkdir(parents=True, exist_ok=True)
+        results_path = log_dir / f"{_safe_filename(model_name)}_benchmark.json"
+        with open(results_path, 'w', encoding='utf-8') as f:
+            json.dump(aggregated_results, f, indent=2)
+            
     # Generate comparison
     comparison_df = benchmark.compare_models(results_dict)
     

@@ -13,6 +13,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+import cv2
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -677,6 +678,181 @@ class UnifiedTrainer:
         print(f"✅ Training metrics saved to: {save_path}")
         
         return metrics
+
+
+class ThermalFaceDetector:
+    """Inference class for detecting facial regions in thermal images"""
+
+    def __init__(self, model: nn.Module, model_path: str, config: Config):
+        self.config = config
+        self.model = model
+        self.model.load_state_dict(torch.load(model_path, map_location=config.DEVICE))
+        self.model.to(config.DEVICE)
+        self.model.eval()
+
+    def normalize_thermal(self, thermal_img: np.ndarray) -> np.ndarray:
+        """Normalize thermal image to [0, 1] range"""
+        min_val = thermal_img.min()
+        max_val = thermal_img.max()
+        if max_val - min_val > 0:
+            return (thermal_img - min_val) / (max_val - min_val)
+        return thermal_img
+
+    def predict(self, thermal_image: np.ndarray):
+        """
+        Predict facial regions in a thermal image
+
+        Args:
+            thermal_image: Input thermal image (H, W) in Celsius
+
+        Returns:
+            Dictionary with region names and their masks, and the full prediction mask
+        """
+        # Store original shape
+        original_shape = thermal_image.shape
+
+        # Normalize
+        thermal_image_norm = self.normalize_thermal(thermal_image)
+
+        # Resize
+        thermal_image_resized = cv2.resize(
+            thermal_image_norm, self.config.IMAGE_SIZE,
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        # Convert to tensor
+        image_tensor = torch.from_numpy(
+            thermal_image_resized).unsqueeze(0).unsqueeze(0)
+        image_tensor = image_tensor.float().to(self.config.DEVICE)
+
+        # Predict
+        with torch.no_grad():
+            output = self.model(image_tensor)
+            pred_mask = torch.argmax(output, dim=1).squeeze().cpu().numpy()
+
+        # Resize back to original size
+        pred_mask = cv2.resize(
+            pred_mask.astype(np.uint8),
+            (original_shape[1], original_shape[0]),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        # Extract individual regions
+        regions = {}
+        for idx, region_name in enumerate(self.config.REGION_NAMES):
+            region_mask = (pred_mask == idx).astype(np.uint8)
+            regions[region_name] = region_mask
+
+        return regions, pred_mask
+
+    def get_stats_info(self, thermal_image: np.ndarray, regions: Dict[str, np.ndarray]):
+        """
+        Calculate statistics information for each region using original thermal data in Celsius
+        
+        Args:
+            thermal_image: Original thermal image in Celsius (H, W)
+            regions: Dictionary with region names and their binary masks
+            
+        Returns:
+            Dictionary with statistics for each region
+        """
+        stats_info = {}
+
+        for region_name, mask in regions.items():
+            # Extract temperature values only where mask is 1
+            region_temps = thermal_image[mask == 1]
+
+            # Check if region has any pixels
+            if len(region_temps) == 0:
+                stats_info[region_name] = {
+                    'mean': None,
+                    'median': None,
+                    'mode': None,
+                    'std': None,
+                    'min': None,
+                    'max': None,
+                    'pixel_count': 0
+                }
+                continue
+
+            # Calculate statistics
+            mean_temp = np.mean(region_temps)
+            median_temp = np.median(region_temps)
+            std_temp = np.std(region_temps)
+            min_temp = np.min(region_temps)
+            max_temp = np.max(region_temps)
+
+            # Calculate mode (most frequent temperature value)
+            # For continuous data, we bin the temperatures using 0.1°C bins
+            bins = np.arange(region_temps.min(), region_temps.max() + 0.1, 0.1)
+            hist, bin_edges = np.histogram(region_temps, bins=bins)
+            mode_idx = np.argmax(hist)
+            mode_temp = (bin_edges[mode_idx] + bin_edges[mode_idx + 1]) / 2
+
+            stats_info[region_name] = {
+                'mean': float(mean_temp),
+                'median': float(median_temp),
+                'mode': float(mode_temp),
+                'std': float(std_temp),
+                'min': float(min_temp),
+                'max': float(max_temp),
+                'pixel_count': int(len(region_temps))
+            }
+
+        return stats_info
+
+    def visualize_predictions(self, thermal_image: np.ndarray,
+                              regions: Dict[str, np.ndarray],
+                              save_path: Optional[str] = None):
+        """Visualize predicted regions"""
+        fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+        axes = axes.flatten()
+
+        # Show original image
+        axes[0].imshow(thermal_image, cmap='hot')
+        axes[0].set_title('Original Thermal Image')
+        axes[0].axis('off')
+
+        # Show each region
+        for idx, (region_name, mask) in enumerate(regions.items(), 1):
+            if idx < len(axes):
+                axes[idx].imshow(mask, cmap='gray')
+                axes[idx].set_title(region_name, fontsize=8)
+                axes[idx].axis('off')
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+    def print_stats_report(self, stats_info: Dict[str, Dict]):
+        """
+        Print a formatted report of thermal statistics for all regions
+        
+        Args:
+            stats_info: Dictionary with statistics for each region
+        """
+        print("\n" + "="*80)
+        print("THERMAL STATISTICS REPORT (°C)")
+        print("="*80)
+
+        for region_name, stats in stats_info.items():
+            print(f"\n{region_name}:")
+            print("-" * 80)
+
+            if stats['pixel_count'] == 0:
+                print("  No pixels detected in this region")
+                continue
+
+            print(f"  Mean:        {stats['mean']:.2f} °C")
+            print(f"  Median:      {stats['median']:.2f} °C")
+            print(f"  Mode:        {stats['mode']:.2f} °C")
+            print(f"  Std Dev:     {stats['std']:.2f} °C")
+            print(f"  Min:         {stats['min']:.2f} °C")
+            print(f"  Max:         {stats['max']:.2f} °C")
+            print(f"  Pixel Count: {stats['pixel_count']}")
+
+        print("\n" + "="*80)
 
 
 if __name__ == "__main__":

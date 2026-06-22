@@ -119,6 +119,8 @@ class Pipeline:
         """
         batch_size = self.hardware_profile.batch_sizes.get(model_name, 8)
         num_workers = self.hardware_profile.num_workers
+        if 'NUM_WORKERS' in os.environ:
+            num_workers = int(os.environ['NUM_WORKERS'])
 
         folds_data, _ = create_kfold_data_loaders(
             self.config,
@@ -302,14 +304,8 @@ class Pipeline:
         print(f"✅ All training completed in {total_duration:.1f} minutes")
         print("="*80)
     
-    def _create_benchmark_loaders(self):
-        """Create a single validation loader for benchmarking (using first fold)."""
-        first_model = self.models_to_train[0]
-        loaders = self._get_fold_loaders(first_model, 0)
-        return loaders['val_loader']
-
     def run_benchmark(self):
-        """Run comprehensive benchmark on all trained models"""
+        """Run comprehensive benchmark on all trained models, aggregating across all folds"""
         if self.skip_benchmark:
             print("\n⚠️  Skipping benchmark (--skip-benchmark flag set)")
             return
@@ -339,16 +335,19 @@ class Pipeline:
                 num_classes=self.config.NUM_CLASSES
             )
         
-        # Run benchmark
-        # We'll evaluate the fold 1 model on fold 1 validation data as a proxy for now, 
-        # as benchmark_models expects a single model and loader.
-        # Future improvement: modify benchmark_models to aggregate across all folds.
-        print("Note: Benchmarking is currently evaluating Fold 1 models.")
-        val_loader = self._create_benchmark_loaders()
-        
-        # Run benchmark
+        # Get loaders for all models and folds (lazy creation)
+        val_loaders_dict = {}
+        for name in models_dict.keys():
+            model_key = 'unet' if name == 'U-Net' else 'transunet' if name == 'TransUNet' else 'swin'
+            loaders = []
+            for fold_idx in range(self.config.K_FOLDS):
+                loaders_data = self._get_fold_loaders(model_key, fold_idx)
+                loaders.append(loaders_data['val_loader'])
+            val_loaders_dict[name] = loaders
+            
+        print(f"Aggregating benchmark results across all {self.config.K_FOLDS} folds.")
         comparison_df = benchmark_models.run_benchmark(
-            models_dict, self.config, val_loader
+            models_dict, self.config, val_loaders_dict=val_loaders_dict
         )
         
         print("\n✅ Benchmark completed successfully")
