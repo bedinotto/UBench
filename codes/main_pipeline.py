@@ -439,8 +439,18 @@ def main():
         default=100,
         help='Number of training epochs (default: 100)'
     )
+    parser.add_argument(
+        '--detect-anomaly',
+        action='store_true',
+        help='Enable PyTorch anomaly detection to debug NaN/Inf gradients'
+    )
 
     args = parser.parse_args()
+
+    # Enable anomaly detection if requested
+    if args.detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
+        print("⚠️  WARNING: PyTorch anomaly detection is enabled. This will heavily degrade training performance.")
 
     # Update epoch count if specified
     if args.epochs != 100:
