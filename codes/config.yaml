@@ -1,0 +1,34 @@
+# UBench Central Configuration
+
+paths:
+  data_dir: "data"
+  processed_dir: "data/processed"
+  output_dir: "outputs"
+  log_dir: "logs"
+
+model:
+  image_size: [256, 256]
+  num_classes: 10
+  
+training:
+  learning_rate: 1.0e-4
+  num_epochs: 100
+  k_folds: 5
+  random_seed: 42
+  batch_sizes:
+    # Optional overrides, otherwise hardware_detector takes precedence
+    unet: null
+    transunet: null
+    swin: null
+
+regions:
+  - "background"
+  - "Contorno inferior do Rosto"
+  - "Sombrancelha esquerda"
+  - "Sombrancelha direita"
+  - "Nariz"
+  - "Olho esquerdo"
+  - "Olho direito"
+  - "Boca"
+  - "Labios"
+  - "Testa"

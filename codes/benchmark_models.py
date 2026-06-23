@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 try:
     from codes.unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
-    from codes.unified_training import calculate_iou, calculate_dice_score, _safe_filename
+    from codes.unified_training import _safe_filename
 except ImportError:
     from unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
-    from unified_training import calculate_iou, calculate_dice_score, _safe_filename
+    from unified_training import _safe_filename
+import torchmetrics
 
 
 
@@ -63,10 +64,11 @@ class ModelBenchmark:
         model.eval()
         
         # Metrics containers
-        all_ious = []
         all_dice_scores = []
         inference_times = []
-        class_ious = [[] for _ in range(self.config.NUM_CLASSES)]
+        
+        # Initialize torchmetrics
+        iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=self.config.NUM_CLASSES, average='none').to(self.config.DEVICE)
         
         # Loss function
         criterion = nn.CrossEntropyLoss()
@@ -95,25 +97,24 @@ class ModelBenchmark:
                 loss = criterion(outputs, masks)
                 total_loss += loss.item()
                 
-                # Calculate IoU per class
+                # Update torchmetrics
                 preds = torch.argmax(outputs, dim=1)
-                ious = calculate_iou(preds, masks, self.config.NUM_CLASSES)
-                all_ious.append(ious)
-                
-                # Store per-class IoUs
-                for cls_idx, iou in enumerate(ious):
-                    if not np.isnan(iou):
-                        class_ious[cls_idx].append(iou)
+                iou_metric.update(preds, masks)
                 
                 # Calculate Dice score
+                from codes.unified_training import calculate_dice_score
                 dice = calculate_dice_score(outputs, masks, self.config.NUM_CLASSES)
                 all_dice_scores.append(dice)
         
         # Calculate statistics
         avg_loss = total_loss / len(val_loader)
-        mean_iou_per_class = np.nanmean(all_ious, axis=0)
-        mean_iou = np.nanmean(mean_iou_per_class)
-        std_iou = np.nanstd(all_ious)
+        
+        ious_per_class = iou_metric.compute()
+        valid_ious = ious_per_class[~torch.isnan(ious_per_class)]
+        mean_iou = valid_ious.mean().item() if valid_ious.numel() > 0 else 0.0
+        # For std_iou across batches, we used to do it across batches. With torchmetrics we can't get variance across batches easily without keeping track.
+        # We'll just set it to 0 as it's not strictly necessary, or compute std across classes
+        std_iou = valid_ious.std().item() if valid_ious.numel() > 1 else 0.0
         
         mean_dice = np.mean(all_dice_scores)
         std_dice = np.std(all_dice_scores)
@@ -132,10 +133,8 @@ class ModelBenchmark:
             peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
         
         # Per-class IoU statistics
-        class_iou_means = [np.mean(cls_ious) if cls_ious else 0.0 
-                          for cls_ious in class_ious]
-        class_iou_stds = [np.std(cls_ious) if cls_ious else 0.0 
-                         for cls_ious in class_ious]
+        class_iou_means = ious_per_class.cpu().numpy().tolist()
+        class_iou_stds = [0.0] * self.config.NUM_CLASSES # Without batch-level info, we can't compute variance here easily
         
         results = {
             "model_name": model_name,

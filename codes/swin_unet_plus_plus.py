@@ -200,6 +200,9 @@ class NestedConvBlock(nn.Module):
         return self.conv(x)
 
 
+from .model_registry import register_model
+
+@register_model("swin_unet_plus_plus")
 class SwinUNetPlusPlus(nn.Module):
     """Swin-UNet++ architecture with nested dense skip connections"""
 

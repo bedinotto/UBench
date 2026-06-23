@@ -91,8 +91,13 @@ class HardwareProfile:
             # 2 workers is the safe sweet spot: enough to overlap I/O
             # with GPU compute, without exhausting OS resources.
             return min(2, max(1, self.cpu_count // 4))
-        # Linux / Mac: fork is cheap — use more workers, capped by CPU count
-        optimal = min(self.cpu_count - 2, 8)
+        # Linux / Mac: when CUDA is active PyTorch forces the 'spawn'
+        # multiprocessing context (each worker starts a full Python
+        # interpreter), so the cost is closer to Windows than to a cheap
+        # fork().  4 workers is sufficient to keep the GPU saturated for
+        # image-loading workloads without excessive semaphore / IPC
+        # pressure.
+        optimal = min(self.cpu_count - 2, 4)
         return max(2, optimal)
     
     def to_dict(self) -> Dict:

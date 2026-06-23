@@ -35,3 +35,8 @@ GPUtil>=1.4.0
 
 # CUDA Detection
 nvidia-ml-py
+
+# Architectural Overhaul Additions
+albumentations>=1.3.1
+torchmetrics>=1.0.0
+pytest>=7.4.0

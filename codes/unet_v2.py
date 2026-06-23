@@ -28,6 +28,9 @@ class DoubleConv(nn.Module):
         return self.double_conv(x)
 
 
+from .model_registry import register_model
+
+@register_model("unet")
 class UNet(nn.Module):
     """U-Net architecture for semantic segmentation"""
 

@@ -21,6 +21,7 @@ try:
     from codes.unified_data import Config
 except ImportError:
     from unified_data import Config
+import torchmetrics
 
 
 def _safe_filename(name: str) -> str:
@@ -84,11 +85,11 @@ class CombinedLoss(nn.Module):
     This prevents fp16 overflow in softmax (Dice) and log-sum-exp (CE).
     """
 
-    def __init__(self, ce_weight=0.5, dice_weight=0.5):
+    def __init__(self, ce_weight=0.5, dice_weight=0.5, class_weights: Optional[torch.Tensor] = None):
         super().__init__()
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.ce_loss = nn.CrossEntropyLoss(weight=class_weights)
         self.dice_loss = DiceLoss()
 
     def forward(self, pred, target):
@@ -102,7 +103,7 @@ class CombinedLoss(nn.Module):
 
 
 def calculate_iou(pred: torch.Tensor, target: torch.Tensor, num_classes: int) -> List[float]:
-    """Calculate IoU for each class"""
+    """Calculate IoU for each class (Legacy fallback, use torchmetrics where possible)"""
     ious = []
     pred = pred.view(-1)
     target = target.view(-1)
@@ -122,7 +123,7 @@ def calculate_iou(pred: torch.Tensor, target: torch.Tensor, num_classes: int) ->
 
 
 def calculate_dice_score(pred: torch.Tensor, target: torch.Tensor, num_classes: int) -> float:
-    """Calculate Dice score"""
+    """Calculate Dice score (Legacy fallback, use torchmetrics where possible)"""
     pred = F.softmax(pred, dim=1)
     target_one_hot = F.one_hot(target, num_classes).permute(0, 3, 1, 2).float()
     
@@ -170,12 +171,21 @@ class UnifiedTrainer:
         self.grad_clip_norm = grad_clip_norm
         self.max_nan_tolerance = max_nan_tolerance
 
+        # Compute class weights if they are present in config (otherwise None)
+        class_weights = None
+        if hasattr(config, 'CLASS_WEIGHTS') and config.CLASS_WEIGHTS is not None:
+            class_weights = torch.tensor(config.CLASS_WEIGHTS, dtype=torch.float).to(config.DEVICE)
+            
         # Loss and optimizer
-        self.criterion = CombinedLoss()
+        self.criterion = CombinedLoss(class_weights=class_weights)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', patience=5, factor=0.5
         )
+        
+        # Initialize torchmetrics
+        self.train_iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=config.NUM_CLASSES).to(config.DEVICE)
+        self.val_iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=config.NUM_CLASSES, average='none').to(config.DEVICE)
 
         # Automatic Mixed Precision (AMP) — enabled on GPUs with reliable fp16
         # Tensor Core support (RTX 20xx / 30xx / 40xx, A-series, etc.).
@@ -464,9 +474,10 @@ class UnifiedTrainer:
         """
         self.model.eval()
         total_loss = 0
-        all_ious = []
         all_dice_scores = []
         inference_times = []
+        
+        self.val_iou_metric.reset()
         
         pbar = tqdm(self.val_loader, desc=f"Validating {self.model_name}")
         with torch.no_grad():
@@ -490,10 +501,9 @@ class UnifiedTrainer:
                 
                 total_loss += loss.item()
                 
-                # Calculate IoU
+                # Calculate Metrics using torchmetrics
                 preds = torch.argmax(outputs, dim=1)
-                ious = calculate_iou(preds, masks, self.config.NUM_CLASSES)
-                all_ious.append(ious)
+                self.val_iou_metric.update(preds, masks)
                 
                 # Calculate Dice score
                 dice = calculate_dice_score(outputs, masks, self.config.NUM_CLASSES)
@@ -504,11 +514,12 @@ class UnifiedTrainer:
         avg_loss = total_loss / len(self.val_loader)
         avg_inference_time = np.mean(inference_times)
         
-        # Calculate mean IoU (ignoring NaN values)
-        mean_iou_per_class = np.nanmean(all_ious, axis=0)
-        mean_iou = np.nanmean(mean_iou_per_class)
+        # Compute epoch-level metrics
+        ious_per_class = self.val_iou_metric.compute()
+        # Remove NaNs (classes not present in target) before computing mean
+        valid_ious = ious_per_class[~torch.isnan(ious_per_class)]
+        mean_iou = valid_ious.mean().item() if valid_ious.numel() > 0 else 0.0
         
-        # Calculate mean Dice score
         mean_dice = np.mean(all_dice_scores)
         
         return avg_loss, mean_iou, mean_dice, avg_inference_time

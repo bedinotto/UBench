@@ -25,15 +25,17 @@ from codes.logger import TeeLogger
 # Import modules
 from codes.hardware_detector import detect_and_optimize, HardwareProfile
 from codes.unified_data import (
-    Config, create_kfold_data_loaders, seed_everything,
-    MultiDirectoryDataLoader, shutdown_data_loaders,
+    Config, create_kfold_data_loaders, create_single_fold_loader,
+    seed_everything, MultiDirectoryDataLoader, shutdown_data_loaders,
 )
 from codes.unified_training import UnifiedTrainer
 
-# Import model architectures
-import codes.unet_v2 as unet_v2
-import codes.transunet as transunet
-import codes.swin_unet_plus_plus as swin_unet_plus_plus
+# Import model architectures and registry
+from codes.model_registry import create_model
+# Import models to ensure they are registered
+import codes.unet_v2
+import codes.transunet
+import codes.swin_unet_plus_plus
 import codes.benchmark_models as benchmark_models
 
 
@@ -105,30 +107,28 @@ class Pipeline:
         print("\nStep 3: Data Loading (annotations)")
         print("-"*80)
 
-        # Load annotations from all Sx directories once — this is cheap.
-        self._shared_data_loader = MultiDirectoryDataLoader(self.config)
-        self._shared_data_loader.load_annotations()
+        # Load annotations from        # (Shared data loader discovery removed as we use offline preprocessed arrays)
+        self._shared_data_loader = None
         print(f"\u2705 Annotations loaded (DataLoaders will be created per-fold)\n")
 
     def _get_fold_loaders(self, model_name: str, fold_idx: int):
         """Create DataLoaders for a single model + fold (lazy, on-demand).
 
-        This avoids the previous approach of pre-creating all 30 loaders
-        (3 models × 5 folds × train/val) up front, which exhausted Windows
-        shared-memory file mappings.
+        Uses ``create_single_fold_loader`` so that only the requested
+        fold's workers are spawned, preventing semaphore / shared-memory
+        leaks from discarded loaders.
         """
         batch_size = self.hardware_profile.batch_sizes.get(model_name, 8)
         num_workers = self.hardware_profile.num_workers
         if 'NUM_WORKERS' in os.environ:
             num_workers = int(os.environ['NUM_WORKERS'])
 
-        folds_data, _ = create_kfold_data_loaders(
+        return create_single_fold_loader(
             self.config,
+            fold_idx=fold_idx,
             batch_size=batch_size,
             num_workers=num_workers,
-            shared_data_loader=self._shared_data_loader,
         )
-        return folds_data[fold_idx]
 
     @staticmethod
     def _cleanup_fold_resources(*loaders):
@@ -138,68 +138,33 @@ class Pipeline:
             torch.cuda.empty_cache()
         gc.collect()
     
-    def train_unet(self, fold_idx: int):
-        """Train U-Net model on a specific fold"""
+    def train_model(self, model_name: str, fold_idx: int):
+        """Train a dynamic model from the registry on a specific fold"""
         print("\n" + "="*80)
-        print(f"TRAINING: U-Net (Fold {fold_idx + 1}/{self.config.K_FOLDS})")
+        print(f"TRAINING: {model_name.upper()} (Fold {fold_idx + 1}/{self.config.K_FOLDS})")
         print("="*80)
         
-        # Create loaders lazily for this fold
-        loaders = self._get_fold_loaders('unet', fold_idx)
-        
-        # Create model
-        model = unet_v2.UNet(in_channels=1, num_classes=self.config.NUM_CLASSES)
-        
-        # Train
-        trainer = UnifiedTrainer(
-            model=model,
-            model_name=f"U-Net_Fold-{fold_idx + 1}",
-            train_loader=loaders['train_loader'],
-            val_loader=loaders['val_loader'],
-            config=self.config,
-            learning_rate=self.config.LEARNING_RATE,
-            num_epochs=self.config.NUM_EPOCHS
-        )
-        
-        trainer.train()
-        trainer.plot_training_history()
-        metrics = trainer.save_metrics()
-        
-        if 'U-Net' not in self.training_results:
-            self.training_results['U-Net'] = []
-            
-        self.training_results['U-Net'].append(metrics)
-        
-        # Cleanup: release loaders + GPU memory before next model
-        del model, trainer
-        self._cleanup_fold_resources(loaders['train_loader'], loaders['val_loader'])
-        
-        return metrics
-    
-    def train_transunet(self, fold_idx: int):
-        """Train TransUNet model on a specific fold"""
-        print("\n" + "="*80)
-        print(f"TRAINING: TransUNet (Fold {fold_idx + 1}/{self.config.K_FOLDS})")
-        print("="*80)
-        
-        # Clear GPU cache before heavy model
+        # Clear GPU cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
+            
         # Create loaders lazily for this fold
-        loaders = self._get_fold_loaders('transunet', fold_idx)
+        loaders = self._get_fold_loaders(model_name, fold_idx)
         
-        # Create model
-        model = transunet.TransUNet(
-            img_size=self.config.IMAGE_SIZE[0],
-            in_channels=1,
-            num_classes=self.config.NUM_CLASSES
-        )
+        # Create model dynamically
+        kwargs = {
+            'in_channels': 1,
+            'num_classes': self.config.NUM_CLASSES
+        }
+        if model_name in ['transunet', 'swin_unet_plus_plus', 'swin']:
+            kwargs['img_size'] = self.config.IMAGE_SIZE[0]
+            
+        model = create_model(model_name, **kwargs)
         
         # Train
         trainer = UnifiedTrainer(
             model=model,
-            model_name=f"TransUNet_Fold-{fold_idx + 1}",
+            model_name=f"{model_name}_Fold-{fold_idx + 1}",
             train_loader=loaders['train_loader'],
             val_loader=loaders['val_loader'],
             config=self.config,
@@ -211,58 +176,12 @@ class Pipeline:
         trainer.plot_training_history()
         metrics = trainer.save_metrics()
         
-        if 'TransUNet' not in self.training_results:
-            self.training_results['TransUNet'] = []
+        if model_name not in self.training_results:
+            self.training_results[model_name] = []
             
-        self.training_results['TransUNet'].append(metrics)
+        self.training_results[model_name].append(metrics)
         
-        # Cleanup: release loaders + GPU memory before next model
-        del model, trainer
-        self._cleanup_fold_resources(loaders['train_loader'], loaders['val_loader'])
-        
-        return metrics
-    
-    def train_swin_unet(self, fold_idx: int):
-        """Train Swin-UNet++ model on a specific fold"""
-        print("\n" + "="*80)
-        print(f"TRAINING: Swin-UNet++ (Fold {fold_idx + 1}/{self.config.K_FOLDS})")
-        print("="*80)
-        
-        # Clear GPU cache before heavy model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # Create loaders lazily for this fold
-        loaders = self._get_fold_loaders('swin', fold_idx)
-        
-        # Create model
-        model = swin_unet_plus_plus.SwinUNetPlusPlus(
-            img_size=self.config.IMAGE_SIZE[0],
-            in_channels=1,
-            num_classes=self.config.NUM_CLASSES
-        )
-        
-        # Train
-        trainer = UnifiedTrainer(
-            model=model,
-            model_name=f"Swin-UNet++_Fold-{fold_idx + 1}",
-            train_loader=loaders['train_loader'],
-            val_loader=loaders['val_loader'],
-            config=self.config,
-            learning_rate=self.config.LEARNING_RATE,
-            num_epochs=self.config.NUM_EPOCHS
-        )
-        
-        trainer.train()
-        trainer.plot_training_history()
-        metrics = trainer.save_metrics()
-        
-        if 'Swin-UNet++' not in self.training_results:
-            self.training_results['Swin-UNet++'] = []
-            
-        self.training_results['Swin-UNet++'].append(metrics)
-        
-        # Cleanup: release loaders + GPU memory before next model
+        # Cleanup
         del model, trainer
         self._cleanup_fold_resources(loaders['train_loader'], loaders['val_loader'])
         
@@ -279,23 +198,16 @@ class Pipeline:
             print(f"\n>>>> STARTING FOLD {fold_idx + 1}/{self.config.K_FOLDS} <<<<")
             
             # Train models based on selection
-            if 'unet' in self.models_to_train:
+            for model_name in self.models_to_train:
+                if model_name == 'swin':
+                    registry_name = 'swin_unet_plus_plus'
+                else:
+                    registry_name = model_name
+                    
                 try:
-                    self.train_unet(fold_idx)
+                    self.train_model(registry_name, fold_idx)
                 except Exception as e:
-                    print(f"❌ U-Net training failed on Fold {fold_idx + 1}: {e}")
-            
-            if 'transunet' in self.models_to_train:
-                try:
-                    self.train_transunet(fold_idx)
-                except Exception as e:
-                    print(f"❌ TransUNet training failed on Fold {fold_idx + 1}: {e}")
-            
-            if 'swin' in self.models_to_train:
-                try:
-                    self.train_swin_unet(fold_idx)
-                except Exception as e:
-                    print(f"❌ Swin-UNet++ training failed on Fold {fold_idx + 1}: {e}")
+                    print(f"❌ {model_name} training failed on Fold {fold_idx + 1}: {e}")
         
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds() / 60
@@ -315,35 +227,38 @@ class Pipeline:
         
         # Prepare models dictionary
         models_dict = {}
-        
-        if 'unet' in self.models_to_train:
-            models_dict['U-Net'] = unet_v2.UNet(
-                in_channels=1, num_classes=self.config.NUM_CLASSES
-            )
-        
-        if 'transunet' in self.models_to_train:
-            models_dict['TransUNet'] = transunet.TransUNet(
-                img_size=self.config.IMAGE_SIZE[0],
-                in_channels=1,
-                num_classes=self.config.NUM_CLASSES
-            )
-        
-        if 'swin' in self.models_to_train:
-            models_dict['Swin-UNet++'] = swin_unet_plus_plus.SwinUNetPlusPlus(
-                img_size=self.config.IMAGE_SIZE[0],
-                in_channels=1,
-                num_classes=self.config.NUM_CLASSES
-            )
-        
+        for model_name in self.models_to_train:
+            if model_name == 'swin':
+                registry_name = 'swin_unet_plus_plus'
+                display_name = 'Swin-UNet++'
+            elif model_name == 'unet':
+                registry_name = 'unet'
+                display_name = 'U-Net'
+            elif model_name == 'transunet':
+                registry_name = 'transunet'
+                display_name = 'TransUNet'
+            else:
+                registry_name = model_name
+                display_name = model_name
+                
+            kwargs = {
+                'in_channels': 1,
+                'num_classes': self.config.NUM_CLASSES
+            }
+            if registry_name in ['transunet', 'swin_unet_plus_plus']:
+                kwargs['img_size'] = self.config.IMAGE_SIZE[0]
+                
+            models_dict[display_name] = create_model(registry_name, **kwargs)
+            
         # Get loaders for all models and folds (lazy creation)
         val_loaders_dict = {}
-        for name in models_dict.keys():
-            model_key = 'unet' if name == 'U-Net' else 'transunet' if name == 'TransUNet' else 'swin'
+        for display_name in models_dict.keys():
+            model_key = 'unet' if display_name == 'U-Net' else 'transunet' if display_name == 'TransUNet' else 'swin' if display_name == 'Swin-UNet++' else display_name
             loaders = []
             for fold_idx in range(self.config.K_FOLDS):
                 loaders_data = self._get_fold_loaders(model_key, fold_idx)
                 loaders.append(loaders_data['val_loader'])
-            val_loaders_dict[name] = loaders
+            val_loaders_dict[display_name] = loaders
             
         print(f"Aggregating benchmark results across all {self.config.K_FOLDS} folds.")
         comparison_df = benchmark_models.run_benchmark(

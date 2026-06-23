@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import torch
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, GroupKFold
 import random
+import yaml
 
 
 def _raw_to_celsius(raw):
@@ -48,26 +49,34 @@ def seed_everything(seed: int = 42):
 class Config:
     """Unified configuration for all models"""
     
+    # We will load defaults from config.yaml if it exists, otherwise use fallbacks.
+    _yaml_path = Path(__file__).parent / "config.yaml"
+    _cfg_dict = {}
+    if _yaml_path.exists():
+        with open(_yaml_path, "r", encoding="utf-8") as f:
+            _cfg_dict = yaml.safe_load(f)
+
     # Data paths (STRICT structure)
-    DATA_DIR = Path("data")
+    DATA_DIR = Path(_cfg_dict.get("paths", {}).get("data_dir", "data"))
+    PROCESSED_DIR = Path(_cfg_dict.get("paths", {}).get("processed_dir", "data/processed"))
     
     # Output paths (STRICT structure)
-    OUTPUT_DIR = Path("outputs")
-    LOG_DIR = Path("logs")
+    OUTPUT_DIR = Path(_cfg_dict.get("paths", {}).get("output_dir", "outputs"))
+    LOG_DIR = Path(_cfg_dict.get("paths", {}).get("log_dir", "logs"))
     
     # Model parameters
-    IMAGE_SIZE = (256, 256)
-    NUM_CLASSES = 10
-    LEARNING_RATE = 1e-4
-    NUM_EPOCHS = 100
-    K_FOLDS = 5
-    RANDOM_SEED = 42
+    IMAGE_SIZE = tuple(_cfg_dict.get("model", {}).get("image_size", [256, 256]))
+    NUM_CLASSES = _cfg_dict.get("model", {}).get("num_classes", 10)
+    LEARNING_RATE = float(_cfg_dict.get("training", {}).get("learning_rate", 1e-4))
+    NUM_EPOCHS = _cfg_dict.get("training", {}).get("num_epochs", 100)
+    K_FOLDS = _cfg_dict.get("training", {}).get("k_folds", 5)
+    RANDOM_SEED = _cfg_dict.get("training", {}).get("random_seed", 42)
     
-    # Thermal conversion  (uses a named function – lambdas are not picklable)
+    # Thermal conversion
     RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
     
     # Region names
-    REGION_NAMES = [
+    REGION_NAMES = _cfg_dict.get("regions", [
         "background",
         "Contorno inferior do Rosto",
         "Sombrancelha esquerda",
@@ -78,7 +87,7 @@ class Config:
         "Boca",
         "Labios",
         "Testa"
-    ]
+    ])
     
     # Device
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -87,8 +96,8 @@ class Config:
         """Initialize and validate paths
         
         Args:
-            output_dir: Override for output directory (e.g., timestamped subdir)
-            log_dir: Override for log directory (e.g., timestamped subdir)
+            output_dir: Override for output directory
+            log_dir: Override for log directory
         """
         if output_dir:
             self.OUTPUT_DIR = Path(output_dir)
@@ -111,11 +120,11 @@ class Config:
     
     def _create_output_dirs(self):
         """Create output directories if they don't exist"""
-        self.OUTPUT_DIR.mkdir(exist_ok=True)
-        self.LOG_DIR.mkdir(exist_ok=True)
-        (self.OUTPUT_DIR / "models").mkdir(exist_ok=True)
-        (self.OUTPUT_DIR / "plots").mkdir(exist_ok=True)
-        (self.OUTPUT_DIR / "predictions").mkdir(exist_ok=True)
+        self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        self.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        (self.OUTPUT_DIR / "models").mkdir(parents=True, exist_ok=True)
+        (self.OUTPUT_DIR / "plots").mkdir(parents=True, exist_ok=True)
+        (self.OUTPUT_DIR / "predictions").mkdir(parents=True, exist_ok=True)
 
 
 class MultiDirectoryDataLoader:
@@ -355,89 +364,44 @@ class MultiDirectoryDataLoader:
 
 
 class ThermalFaceDataset(Dataset):
-    """Unified PyTorch Dataset for thermal facial images"""
+    """Unified PyTorch Dataset reading from offline preprocessed arrays"""
     
-    def __init__(self, sample_ids: List[str], data_loader: MultiDirectoryDataLoader,
-                 config: Config, augment: bool = False):
-        self.sample_ids = sample_ids
-        self.data_loader = data_loader
+    def __init__(self, metadata_df: pd.DataFrame, config: Config, augment: bool = False):
+        self.metadata = metadata_df.reset_index(drop=True)
         self.config = config
         self.augment = augment
+        
+        # Import inside to ensure albumentations is available
+        import albumentations as A
+        
+        if self.augment:
+            self.transform = A.Compose([
+                A.HorizontalFlip(p=0.5),
+                A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=10, 
+                                   interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, value=0, p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5)
+            ])
+        else:
+            self.transform = None
     
     def __len__(self):
-        return len(self.sample_ids)
-    
-    def normalize_thermal(self, thermal_img: np.ndarray) -> np.ndarray:
-        """Normalize thermal image to [0, 1] range"""
-        min_val = thermal_img.min()
-        max_val = thermal_img.max()
-        if max_val - min_val > 0:
-            return (thermal_img - min_val) / (max_val - min_val)
-        return thermal_img
-    
-    def augment_data(self, image: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Apply data augmentation"""
-        # Random horizontal flip
-        if np.random.random() > 0.5:
-            image = np.fliplr(image)
-            mask = np.fliplr(mask)
-        
-        # Random rotation (-10 to 10 degrees)
-        if np.random.random() > 0.5:
-            angle = np.random.uniform(-10, 10)
-            h, w = image.shape
-            M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
-            image = cv2.warpAffine(image, M, (w, h))
-            mask = cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST)
-        
-        # Random brightness adjustment
-        if np.random.random() > 0.5:
-            factor = np.random.uniform(0.8, 1.2)
-            image = np.clip(image * factor, 0, 1)
-        
-        return image, mask
+        return len(self.metadata)
     
     def __getitem__(self, idx):
-        sample_id = self.sample_ids[idx]
+        row = self.metadata.iloc[idx]
+        sample_id = row['sample_id']
         
-        # Load thermal image
-        thermal_img = self.data_loader.load_thermal_image(sample_id)
+        img_path = str(self.config.DATA_DIR.parent / row['image_path'])
+        mask_path = str(self.config.DATA_DIR.parent / row['mask_path'])
         
-        # Get bounding box info for offset
-        offset_x = 0
-        offset_y = 0
-        if (self.data_loader.all_bboxes is not None and 
-            sample_id in self.data_loader.all_bboxes['ID'].values):
-            bbox = self.data_loader.all_bboxes[
-                self.data_loader.all_bboxes['ID'] == sample_id
-            ].iloc[0]
-            offset_x = int(bbox['min_x']) - 10
-            offset_y = int(bbox['min_y']) - 10
+        # Load precomputed arrays
+        thermal_img = np.load(img_path).astype(np.float32)
+        mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED).astype(np.int64)
         
-        # Crop to region of interest
-        thermal_img = self.data_loader.crop_to_bbox(thermal_img, sample_id)
-        
-        # Create segmentation mask
-        mask = self.data_loader.create_segmentation_mask(
-            sample_id, thermal_img.shape, (offset_x, offset_y)
-        )
-        
-        # Normalize thermal image
-        thermal_img = self.normalize_thermal(thermal_img)
-        
-        # Apply augmentation if training
-        if self.augment:
-            thermal_img, mask = self.augment_data(thermal_img, mask)
-        
-        # Resize to target size
-        thermal_img = cv2.resize(
-            thermal_img, self.config.IMAGE_SIZE,
-            interpolation=cv2.INTER_LINEAR
-        )
-        mask = cv2.resize(
-            mask, self.config.IMAGE_SIZE,
-            interpolation=cv2.INTER_NEAREST
-        )
+        if self.transform:
+            augmented = self.transform(image=thermal_img, mask=mask)
+            thermal_img = augmented['image']
+            mask = augmented['mask']
         
         # Convert to tensors
         thermal_img = torch.from_numpy(thermal_img).unsqueeze(0).float()
@@ -449,57 +413,23 @@ class ThermalFaceDataset(Dataset):
 def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
                               shared_data_loader: MultiDirectoryDataLoader = None):
     """
-    Create K-Fold training and validation data loaders from all available datasets
-    
-    Args:
-        config: Configuration object
-        batch_size: Batch size for training
-        num_workers: Number of data loading workers
-        shared_data_loader: Optional preloaded data loader to skip discovering datasets again
-    
-    Returns:
-        folds_data: List of dicts, each containing 'train_loader', 'val_loader', 'train_ids', 'val_ids'
-        data_loader: The MultiDirectoryDataLoader instance
+    Create K-Fold training and validation data loaders from preprocessed offline arrays
     """
-    # Load data from all directories if not provided
-    if shared_data_loader is None:
-        data_loader = MultiDirectoryDataLoader(config)
-        data_loader.load_annotations()
-    else:
-        data_loader = shared_data_loader
+    metadata_path = config.PROCESSED_DIR / "metadata.csv"
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Preprocessed data not found at {metadata_path}. Please run 'python codes/preprocess_data.py' first.")
+        
+    df = pd.read_csv(metadata_path)
     
-    # Get all sample IDs and filter out missing
-    raw_sample_ids = list(data_loader.all_polygons.keys())
-    sample_ids = []
-    missing_count = 0
-    
-    for sid in raw_sample_ids:
-        if data_loader.get_tiff_path(sid) is not None:
-            sample_ids.append(sid)
-        else:
-            missing_count += 1
-            
-    if shared_data_loader is None:
-        if missing_count > 0:
-            print(f"\n⚠️  Filtered out {missing_count} samples with missing thermal images.")
-            
-    if not sample_ids:
-        raise ValueError("No samples found in any dataset directory!")
-    
-    # Extract dataset sources for stratified splitting (e.g. 'S1', 'S2')
-    dataset_sources = [sid.split('/')[0] for sid in sample_ids]
-    
-    # Setup KFold
     if 'LIMIT_SAMPLES' in os.environ:
         limit = int(os.environ['LIMIT_SAMPLES'])
-        sample_ids = sample_ids[:limit]
-        dataset_sources = dataset_sources[:limit]
-        from sklearn.model_selection import KFold
-        skf = KFold(n_splits=config.K_FOLDS, shuffle=True, random_state=config.RANDOM_SEED)
-        split_generator = skf.split(sample_ids)
-    else:
-        skf = StratifiedKFold(n_splits=config.K_FOLDS, shuffle=True, random_state=config.RANDOM_SEED)
-        split_generator = skf.split(sample_ids, dataset_sources)
+        df = df.head(limit)
+        
+    from sklearn.model_selection import GroupKFold
+    
+    # Use GroupKFold to prevent data leakage from the same dataset source (e.g., S1)
+    gkf = GroupKFold(n_splits=config.K_FOLDS)
+    split_generator = gkf.split(df, groups=df['dataset'])
     
     folds_data = []
     
@@ -512,36 +442,33 @@ def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
         print("   DataLoader: single-process mode (num_workers=0)")
 
     pin_memory = torch.cuda.is_available()
-    # On Windows, persistent_workers keeps 'spawn'-ed worker processes alive
-    # across epochs.  Each worker holds shared-memory file mappings that count
-    # against a hard Windows kernel limit.  When multiple DataLoaders exist
-    # simultaneously (models × folds), persistent workers quickly exhaust the
-    # limit, causing RuntimeError 1455 / WinError 1450.  Disabling persistence
-    # lets workers terminate cleanly after each epoch iterator is consumed.
     persistent = num_workers > 0 and platform.system() != 'Windows'
     
-    print(f"\nData Split (K-Folds: {config.K_FOLDS}):")
+    print(f"\nData Split (GroupKFold: {config.K_FOLDS}):")
     
     for fold_idx, (train_idx, val_idx) in enumerate(split_generator):
-        train_ids = [sample_ids[i] for i in train_idx]
-        val_ids = [sample_ids[i] for i in val_idx]
+        train_df = df.iloc[train_idx]
+        val_df = df.iloc[val_idx]
         
-        if shared_data_loader is None and fold_idx == 0:
+        train_ids = train_df['sample_id'].tolist()
+        val_ids = val_df['sample_id'].tolist()
+        
+        if fold_idx == 0:
             print(f"  Fold 1 Training samples:   {len(train_ids)}")
             print(f"  Fold 1 Validation samples: {len(val_ids)}")
             print(f"\nSamples per dataset (Fold 1):")
-            for dataset_name in sorted(data_loader.datasets.keys()):
-                train_count = sum(1 for sid in train_ids if sid.startswith(dataset_name + '/'))
-                val_count = sum(1 for sid in val_ids if sid.startswith(dataset_name + '/'))
+            for dataset_name in sorted(df['dataset'].unique()):
+                train_count = sum(train_df['dataset'] == dataset_name)
+                val_count = sum(val_df['dataset'] == dataset_name)
                 total_count = train_count + val_count
                 print(f"  {dataset_name}: {total_count} total ({train_count} train, {val_count} val)")
         
         # Create datasets
         train_dataset = ThermalFaceDataset(
-            train_ids, data_loader, config, augment=True
+            train_df, config, augment=True
         )
         val_dataset = ThermalFaceDataset(
-            val_ids, data_loader, config, augment=False
+            val_df, config, augment=False
         )
         
         # Create dataloaders
@@ -570,9 +497,102 @@ def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
             'train_ids': train_ids,
             'val_ids': val_ids
         })
+    return folds_data, None
 
-    return folds_data, data_loader
 
+def create_single_fold_loader(config: Config, fold_idx: int, batch_size: int,
+                              num_workers: int):
+    """Create DataLoaders for a **single** K-Fold split.
+
+    Unlike ``create_kfold_data_loaders`` (which builds all K folds and
+    returns a list), this function only materialises the one fold that
+    is actually needed.  This avoids spawning ``(K-1) * 2 * num_workers``
+    worker processes that would be immediately discarded, preventing
+    POSIX semaphore leaks on Linux and shared-memory exhaustion on
+    Windows.
+
+    Parameters
+    ----------
+    config : Config
+        Project configuration object.
+    fold_idx : int
+        Zero-based fold index (0 … K-1).
+    batch_size : int
+        Batch size for the DataLoaders.
+    num_workers : int
+        Number of prefetch worker processes.
+
+    Returns
+    -------
+    dict
+        ``{'train_loader': DataLoader, 'val_loader': DataLoader,
+        'train_ids': list, 'val_ids': list}``
+    """
+    metadata_path = config.PROCESSED_DIR / "metadata.csv"
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Preprocessed data not found at {metadata_path}. "
+            f"Please run 'python codes/preprocess_data.py' first."
+        )
+
+    df = pd.read_csv(metadata_path)
+
+    if 'LIMIT_SAMPLES' in os.environ:
+        limit = int(os.environ['LIMIT_SAMPLES'])
+        df = df.head(limit)
+
+    from sklearn.model_selection import GroupKFold
+
+    gkf = GroupKFold(n_splits=config.K_FOLDS)
+    split_generator = gkf.split(df, groups=df['dataset'])
+
+    # Advance the generator to the requested fold
+    for i, (train_idx, val_idx) in enumerate(split_generator):
+        if i == fold_idx:
+            break
+    else:
+        raise IndexError(f"fold_idx {fold_idx} is out of range for K={config.K_FOLDS}")
+
+    train_df = df.iloc[train_idx]
+    val_df = df.iloc[val_idx]
+
+    # Worker config
+    if num_workers > 0:
+        mp_context = 'spawn'
+    else:
+        mp_context = None
+
+    pin_memory = torch.cuda.is_available()
+    persistent = num_workers > 0 and platform.system() != 'Windows'
+
+    train_dataset = ThermalFaceDataset(train_df, config, augment=True)
+    val_dataset = ThermalFaceDataset(val_df, config, augment=False)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        multiprocessing_context=mp_context,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        multiprocessing_context=mp_context,
+    )
+
+    return {
+        'train_loader': train_loader,
+        'val_loader': val_loader,
+        'train_ids': train_df['sample_id'].tolist(),
+        'val_ids': val_df['sample_id'].tolist(),
+    }
 
 def shutdown_data_loaders(*loaders: DataLoader):
     """Explicitly shut down DataLoader worker processes and free OS resources.
@@ -580,20 +600,27 @@ def shutdown_data_loaders(*loaders: DataLoader):
     On Windows, each DataLoader with num_workers>0 holds open shared-memory
     file mappings.  Calling this function between folds / models ensures those
     handles are released before new loaders are created.
+
+    On Linux with the 'spawn' multiprocessing context, each worker holds a
+    POSIX named semaphore.  Failing to shut workers down cleanly causes
+    semaphore leaks that Python's resource_tracker warns about at exit.
     """
     import gc
     for loader in loaders:
         if loader is None:
             continue
-        # The internal _MultiProcessingDataLoaderIter holds worker references.
-        # Triggering its __del__ via attribute deletion is the safest public API.
-        if hasattr(loader, '_iterator'):
-            loader._iterator = None
-        # Some PyTorch versions expose _workers directly on the iterator.
+        # Save the iterator reference *before* clearing it so we can
+        # call _shutdown_workers() on the live object.
         it = getattr(loader, '_iterator', None)
-        if it is not None and hasattr(it, '_shutdown_workers'):
+        if it is not None:
+            if hasattr(it, '_shutdown_workers'):
+                try:
+                    it._shutdown_workers()
+                except Exception:
+                    pass
+            # Clear the reference so the iterator can be garbage-collected
             try:
-                it._shutdown_workers()
+                loader._iterator = None
             except Exception:
                 pass
     gc.collect()

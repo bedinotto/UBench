@@ -165,6 +165,9 @@ class CNNEncoder(nn.Module):
         return x0, x1, x2, x3
 
 
+from .model_registry import register_model
+
+@register_model("transunet")
 class TransUNet(nn.Module):
     """TransUNet: Transformer-CNN Hybrid Architecture"""
 
