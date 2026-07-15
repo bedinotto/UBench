@@ -20,7 +20,7 @@ UBench is a computer vision pipeline for **thermal facial region segmentation** 
 
 ## 2. Current state — READ FIRST
 
-The repository **does not work end-to-end**: a fresh clone running `./run.sh` fails (preprocessing is never invoked — UB-01), and even when trained manually, the final benchmark silently drops 2 of the 3 models (filename contract mismatch — UB-02). Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
+The repository **does not work end-to-end**: a fresh clone running `./run.sh` now preprocesses and trains (UB-01 fixed in T1.1), but the final benchmark silently drops 2 of the 3 models (filename contract mismatch — UB-02) and still exits 0. Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
 
 **Prime directive:** *No task is "done" until its acceptance test passes in a real execution.* Reading code is not verification. If you cannot run something, say so explicitly and mark the task blocked.
 
@@ -46,7 +46,7 @@ PyTorch is **not** in `requirements/requirements.txt` — on GPU training boxes 
 ### 3.2 Entry points and flag forwarding
 
 ```bash
-./run.sh                                  # Linux/Mac   (⚠ currently fails E2E — UB-01)
+./run.sh                                  # Linux/Mac   (⚠ benchmark silently drops 2 of 3 models — UB-02)
 run.bat                                   # Windows
 ./run.sh --skip-extract --skip-setup --models unet --epochs 10
 ./run.sh --models transunet swin          # model choices: unet, transunet, swin
@@ -60,8 +60,9 @@ run.bat                                   # Windows
 ```bash
 python codes/extract_data.py          # unzip requirements/*.zip -> data/ (needs Git LFS)
 python codes/setup.py                 # env validation + CUDA torch install (GPU boxes)
-python codes/preprocess_data.py       # REQUIRED before training; writes data/processed/ + metadata.csv
-                                      # (⚠ UB-01: no entry point calls this — you must, until T1.1)
+python codes/preprocess_data.py       # writes data/processed/ + metadata.csv; the pipeline runs this
+                                      # automatically when metadata.csv is absent (T1.1);
+                                      # --force-preprocess on main_pipeline.py rebuilds unconditionally
 python codes/main_pipeline.py --models unet --epochs 10 --skip-benchmark
 python codes/inference_comparison.py  # standalone side-by-side prediction viewer for trained
                                       # checkpoints; not wired into the pipeline (UB-22: wire or delete)
@@ -98,7 +99,7 @@ run.sh / run.bat
   └─ codes/setup.py             # validate Python/CUDA, install deps
   └─ codes/main_pipeline.py     # orchestrator (Pipeline class)
        ├─ codes/hardware_detector.py   # GPU probe, min-6GB check, batch-size/worker scaling
-       ├─ codes/preprocess_data.py     # ⚠ REQUIRED but NOT in the chain until T1.1 (UB-01)
+       ├─ codes/preprocess_data.py     # invoked automatically when data/processed/metadata.csv absent (T1.1)
        ├─ codes/unified_data.py        # Config, S1..S10 discovery, GroupKFold loaders
        ├─ codes/unified_training.py    # UnifiedTrainer: shared train/val loop, checkpoints
        │    ├─ codes/unet_v2.py                (registry: "unet")
@@ -145,7 +146,7 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 
 | ID | Sev | Location | Defect (verified behavior) | Status |
 |----|-----|----------|----------------------------|--------|
-| UB-01 | Blocker | `run.sh`, `main_pipeline.py` | `preprocess_data.py` is never invoked by any entry point; loaders require `data/processed/metadata.csv` → fresh clone fails 15/15 train attempts. README omits the step. | OPEN |
+| UB-01 | Blocker | `run.sh`, `main_pipeline.py` | `preprocess_data.py` is never invoked by any entry point; loaders require `data/processed/metadata.csv` → fresh clone fails 15/15 train attempts. README omits the step. | FIXED@03e6dbb |
 | UB-02 | Blocker | `benchmark_models.py:~443-452` vs `main_pipeline.py:train_model` | Filename contract mismatch: training saves `best_unet_fold_N_model.pth`, `best_swin_unet_plus_plus_fold_N_model.pth` (registry names); benchmark searches `best_u_net_…`/`best_swin_unetplusplus_…` (display names via `_safe_filename`). Only TransUNet matches → comparison silently contains 1 of 3 models. | OPEN |
 | UB-03 | Blocker | `unified_data.py:~427,~540` | `GroupKFold(n_splits=K_FOLDS)` with `groups=df['dataset']` raises `ValueError` whenever #datasets < K (default 5). | OPEN |
 | UB-04 | Blocker/Docs | `unified_data.py`, `README` | Split semantics contradict docs: leave-subjects-out in code vs stratified-per-dataset in README, whose example fold counts GroupKFold cannot produce. Fix the docs, not the split. | OPEN |
@@ -167,7 +168,7 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 | UB-20 | Method/Env | `unified_data.py`, `setup.py`, requirements | No DataLoader `generator`/`worker_init_fn`; `cudnn.benchmark` contradiction; unpinned `>=` deps (albumentations 2.x breaks `ShiftScaleRotate(value=…)`); `--force-reinstall --no-deps` torch against aging `cu121` index; system-Python installs. *Note: albumentations 2.0.8 rejects `ShiftScaleRotate(value=…)` (Phase 0/D2); pinned `<2.0` in Session 1; API migration lands with T3.4.* | OPEN |
 | UB-21 | Hygiene | `codes/*.py` | Three import styles; no `__init__.py`; model files crash if run directly (relative imports). | OPEN |
 | UB-22 | Hygiene | repo root, `.gitignore` | Scratch scripts committed; `inference_comparison.py` orphaned (wire or delete); `codes/tests/*` gitignored while `pytest` is required; `CLAUDE.md` gitignored. | OPEN |
-| UB-23 | Blocker | `codes/hardware_detector.py` | `detect()` calls `sys.exit(1)` when CUDA is unavailable; contradicts §3.1 CPU-first doctrine; blocks CI E2E. Phase 0 worked around it with a test-only runner that patches detection (to be removed by the UB-23 fix). | OPEN |
+| UB-23 | Blocker | `codes/hardware_detector.py` | `detect()` calls `sys.exit(1)` when CUDA is unavailable; contradicts §3.1 CPU-first doctrine; blocks CI E2E. Phase 0 worked around it with a test-only runner that patches detection (removed by the fix: CPU profile behind explicit `UBENCH_ALLOW_CPU=1` opt-in). | FIXED@af14b13 |
 
 ---
 
@@ -299,7 +300,7 @@ Strict order inside each phase; 0→1→2 sequential, 3 may interleave after 1. 
 
 ### Phase 1 — Make `./run.sh` work (P0)
 
-- [ ] **T1.1 (UB-01)** Pipeline invokes `preprocess_all_data()` when `metadata.csv` absent; `--force-preprocess`; README gains the step. AC: smoke progresses past data loading; fresh-clone simulation reaches epoch 1.
+- [x] **T1.1 (UB-01)** Pipeline invokes `preprocess_all_data()` when `metadata.csv` absent; `--force-preprocess`; README gains the step. AC met: smoke trains all 3 models × 2 folds to epoch 1 on the synthetic fixture; frontier advanced to UB-02.
 - [ ] **T1.2 (UB-02)** `codes/naming.py` → `checkpoint_path(model_key, fold, kind)`; trainer and benchmark import it; benchmark receives `model_key` alongside display name. AC: `test_filenames.py` round-trip; smoke's 3-row assertion passes.
 - [ ] **T1.3 (UB-05)** Canonical registry keys in `hardware_detector`; replace `.get(k, 8)` with `[k]`. AC: `test_batch_size_keys.py`; simulated 6 GB profile logs swin batch 6.
 - [ ] **T1.4 (UB-03/04)** `effective_k = min(K, n_groups)` + warning; error if `<2`; README rewritten to leave-subjects-out; impossible example output deleted. AC: `test_splits.py` — runs with 1–3 subject dirs; no subject in both train and val of any fold.
