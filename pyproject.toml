@@ -1,0 +1,16 @@
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# Minimal critical ruleset — keeps existing code clean without reformatting.
+# Tightening the ruleset is deferred to later phases (R3).
+#   E9xx  — runtime errors (syntax errors, invalid escape sequences)
+#   F63x  — invalid assert / print statements
+#   F7xx  — statement-level errors
+#   F82x  — undefined names
+select = ["E9", "F63", "F7", "F82"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["codes/tests"]
+addopts = "-q"
