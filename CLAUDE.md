@@ -205,6 +205,7 @@ codes/tests/
 ├── __init__.py
 ├── conftest.py                 # synthetic_dataset fixture (§7.2), collect_ignore_glob, seeding
 ├── test_pipeline_smoke.py      # E2E gate — THE definition of "the repo works"
+├── test_hardware_cpu.py        # UB-23: CPU profile behind UBENCH_ALLOW_CPU=1 opt-in
 ├── test_filenames.py           # UB-02: train↔benchmark path round-trip
 ├── test_splits.py              # UB-03/04: fold-count guard, subject exclusivity
 ├── test_preprocess_offsets.py  # UB-08: border-bbox mask alignment

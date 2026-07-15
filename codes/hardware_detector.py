@@ -26,17 +26,23 @@ class HardwareProfile:
     """Hardware profile with optimization parameters"""
     
     def __init__(self, gpu_name: str, gpu_memory_gb: float,
-                 cpu_count: int, ram_gb: float, os_type: str = ""):
+                 cpu_count: int, ram_gb: float, os_type: str = "",
+                 device: str = "cuda"):
         self.gpu_name = gpu_name
         self.gpu_memory_gb = gpu_memory_gb
         self.cpu_count = cpu_count
         self.ram_gb = ram_gb
         self.os_type = os_type or platform.system()  # fallback to live detection
+        self.device = device
         self.batch_sizes = self._calculate_batch_sizes()
         self.num_workers = self._calculate_workers()
-        
+
     def _calculate_batch_sizes(self) -> Dict[str, int]:
         """Calculate optimal batch sizes based on GPU memory"""
+        if self.device == "cpu":
+            # CPU mode (UBENCH_ALLOW_CPU=1) exists for tests/CI, not
+            # throughput.  Keys stay {unet, transunet, swin} until T1.3.
+            return {"unet": 4, "transunet": 2, "swin": 2}
         if self.gpu_memory_gb < 5.5:
             print("[WARNING] GPU memory below 6GB - may encounter issues")
             return {"unet": 4, "transunet": 3, "swin": 3}
@@ -82,6 +88,10 @@ class HardwareProfile:
           2. All Dataset / Config objects are picklable              ✓
           3. DataLoader uses multiprocessing_context='spawn'        ✓
         """
+        if self.device == "cpu":
+            # CPU mode: workers compete with training for the same cores
+            # and add IPC overhead; tests also require NUM_WORKERS=0.
+            return 0
         if self.os_type == 'Windows':
             # On Windows, DataLoader uses the 'spawn' start method which
             # creates a brand-new Python interpreter per worker.  Each
@@ -107,12 +117,14 @@ class HardwareProfile:
             "gpu_memory_gb": self.gpu_memory_gb,
             "cpu_count": self.cpu_count,
             "ram_gb": self.ram_gb,
+            "device": self.device,
             "batch_sizes": self.batch_sizes,
             "num_workers": self.num_workers
         }
-    
+
     def __str__(self) -> str:
         return (f"Hardware Profile:\n"
+                f"  Device: {self.device}\n"
                 f"  GPU: {self.gpu_name} ({self.gpu_memory_gb:.1f} GB)\n"
                 f"  CPU Cores: {self.cpu_count}\n"
                 f"  RAM: {self.ram_gb:.1f} GB\n"
@@ -161,9 +173,12 @@ class HardwareDetector:
         
         # Detect CUDA availability
         if not torch.cuda.is_available():
+            if os.environ.get("UBENCH_ALLOW_CPU") == "1":
+                return self._detect_cpu()
             print("[ERROR] CUDA is not available!")
             print("   Please install CUDA-enabled PyTorch")
             print("   Visit: https://pytorch.org/get-started/locally/")
+            print("   (For tests/CI only: set UBENCH_ALLOW_CPU=1 to run on CPU.)")
             sys.exit(1)
         
         # Get CUDA version
@@ -205,7 +220,42 @@ class HardwareDetector:
         print("=" * 70)
         
         return self.profile
-    
+
+    def _detect_cpu(self) -> HardwareProfile:
+        """Build a CPU-only profile (explicit opt-in via UBENCH_ALLOW_CPU=1).
+
+        For tests/CI and functional verification only.  AMP stays off
+        (UnifiedTrainer._build_scaler returns None on CPU), pin_memory is
+        False (unified_data follows torch.cuda.is_available()), workers=0
+        and batch sizes are tiny.  Numbers produced in this mode are smoke
+        artifacts, never benchmarks (R10).
+        """
+        print("!" * 70)
+        print("[WARNING] UBENCH_ALLOW_CPU=1 — running WITHOUT a GPU.")
+        print("          CPU mode is for testing/CI only.  Timing, memory and")
+        print("          training results from this run are NOT benchmarks.")
+        print("!" * 70)
+
+        cpu_count = os.cpu_count() or 4
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+        print(f"CPU Cores: {cpu_count}")
+        print(f"System RAM: {ram_gb:.1f} GB")
+
+        self.profile = HardwareProfile(
+            gpu_name="CPU (no CUDA device)",
+            gpu_memory_gb=0.0,
+            cpu_count=cpu_count,
+            ram_gb=ram_gb,
+            os_type=self.os_type,
+            device="cpu",
+        )
+
+        print("\n" + "=" * 70)
+        print(str(self.profile))
+        print("=" * 70)
+
+        return self.profile
+
     def _detect_gpu(self) -> Optional[Tuple[str, float]]:
         """Detect GPU name and memory"""
         try:
@@ -285,11 +335,12 @@ def detect_and_optimize(log_dir: str = "logs") -> 'HardwareProfile':
     detector = HardwareDetector()
     profile = detector.detect()
 
-    # Set CUDA environment variables
-    env_vars = detector.get_cuda_env_vars()
-    for key, value in env_vars.items():
-        os.environ[key] = value
-        print(f"Set {key}={value}")
+    # Set CUDA environment variables (meaningless in CPU mode)
+    if profile.device != "cpu":
+        env_vars = detector.get_cuda_env_vars()
+        for key, value in env_vars.items():
+            os.environ[key] = value
+            print(f"Set {key}={value}")
 
     # Enable cuDNN benchmark for faster convolutions (since input sizes are constant)
     if torch.cuda.is_available():

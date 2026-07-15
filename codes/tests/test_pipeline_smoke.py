@@ -13,6 +13,10 @@ Expected current failure path:
     caught by train_all_models try/except (UB-07 silent swallow)
     re-raised inside run_benchmark() → caught by Pipeline.run() → returns False
     main() → sys.exit(1) → subprocess rc=1 → assert rc==0 fails → XFAIL ✓
+
+The subprocess runs the REAL entry point (codes/main_pipeline.py) with
+UBENCH_ALLOW_CPU=1 so hardware detection succeeds on CPU-only machines
+(UB-23) — the gate exercises exactly what run.sh invokes.
 """
 
 from __future__ import annotations
@@ -27,22 +31,19 @@ import pytest
 
 # Paths — subprocess CWD is the fixture root, so we need absolute paths.
 _REPO_ROOT = Path(__file__).parents[2]
-# _SMOKE_RUNNER patches hardware detection (CPU-only CI) then calls
-# main_pipeline.main().  This is test infrastructure only — it does not
-# modify any production code.
-_SMOKE_RUNNER = Path(__file__).parent / "_smoke_runner.py"
+_MAIN_PIPELINE = _REPO_ROOT / "codes" / "main_pipeline.py"
 
 
 def run_pipeline_subprocess(
     models: list[str],
     timeout: int = 360,
 ) -> tuple[int, str]:
-    """Invoke the pipeline via the smoke runner in a subprocess.
+    """Invoke the real pipeline entry point in a subprocess.
 
-    Uses ``_smoke_runner.py`` instead of ``main_pipeline.py`` directly so
-    that hardware detection is patched on CPU-only machines (CI, dev
-    workstations without NVIDIA GPUs).  The first real failure is then
-    UB-01 (metadata.csv missing).
+    Runs ``codes/main_pipeline.py`` — the same script ``run.sh`` invokes —
+    with ``UBENCH_ALLOW_CPU=1`` so hardware detection returns a CPU
+    profile on machines without NVIDIA GPUs (UB-23).  The first real
+    failure is then UB-01 (metadata.csv missing).
 
     Parameters
     ----------
@@ -57,10 +58,12 @@ def run_pipeline_subprocess(
     (returncode, combined_output)
         ``combined_output`` is stdout + stderr, truncated for display.
     """
-    cmd = [sys.executable, str(_SMOKE_RUNNER), "--models"] + models
+    env = os.environ.copy()
+    env["UBENCH_ALLOW_CPU"] = "1"  # UB-23: explicit CPU opt-in for the gate
+    cmd = [sys.executable, str(_MAIN_PIPELINE), "--models"] + models
     result = subprocess.run(
         cmd,
-        env=os.environ.copy(),
+        env=env,
         capture_output=True,
         text=True,
         timeout=timeout,
