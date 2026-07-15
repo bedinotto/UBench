@@ -1,19 +1,15 @@
 """
 E2E smoke test — the merge gate (CLAUDE.md §7.3).
 
-This test is the single definition of "the repo works end-to-end."
-It is intentionally marked xfail(strict=True) because UB-02 prevents
-all three models from reaching the benchmark CSV until T1.2 lands.
-strict=True means the test suite will FAIL if the pipeline somehow
-passes before the xfail marker is removed — ensuring the marker is
-removed when the frontier defect is fixed.
+This test is the single definition of "the repo works end-to-end":
+preprocessing runs automatically (T1.1), all 3 models train on the
+synthetic fixture, checkpoints are saved and found through the single
+naming authority (codes/naming.py, T1.2), and the benchmark CSV
+contains all three models.
 
-Expected current failure path (post-T1.1):
-    preprocessing runs, all 3 models train and save checkpoints under
-    registry names (best_unet_…, best_swin_unet_plus_plus_…), but the
-    benchmark searches display-name-derived paths (best_u_net_…,
-    best_swin_unetplusplus_…) → only TransUNet loads → rc=0 with a
-    1-row CSV → the 3-row assertion fails → XFAIL ✓
+Scope note: green here means smoke-level E2E on synthetic CPU data.
+It does NOT cover real-data risks — UB-03 (GroupKFold crash when
+#datasets < K_FOLDS) and UB-07 (per-model failures masked) remain open.
 
 The subprocess runs the REAL entry point (codes/main_pipeline.py) with
 UBENCH_ALLOW_CPU=1 so hardware detection succeeds on CPU-only machines
@@ -28,7 +24,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 # Paths — subprocess CWD is the fixture root, so we need absolute paths.
 _REPO_ROOT = Path(__file__).parents[2]
@@ -89,23 +84,8 @@ def read_latest(glob_pattern: str) -> pd.DataFrame:
     return pd.read_csv(matches[-1])
 
 
-# ---------------------------------------------------------------------------
-# The gate.  xfail(strict=True) keeps the suite GREEN while UB-01 exists and
-# forces removal of this marker once T1.1 makes the pipeline complete.
-# AC update (R9 / T0.2): original CLAUDE.md §9 T0.2 AC said "red only on the
-# smoke test"; updated to "strict-xfail for UB-01 keeps suite green" so CI
-# always reports green while the expected failure is tracked here.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    reason="UB-02: checkpoint filename contract mismatch (frontier after T1.1)",
-    strict=True,
-)
 def test_full_pipeline_smoke(synthetic_dataset, monkeypatch):
     """Full end-to-end pipeline smoke (UB-01/02/03/05/07 guard).
-
-    Once UB-02 is fixed (T1.2), this test should pass and the xfail
-    marker must be removed.  With strict=True, a surprise pass turns
-    the run RED, forcing the marker removal.
 
     Smoke artifacts produced here are labeled as such (R10) and must
     never be treated as real benchmark results.

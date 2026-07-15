@@ -20,9 +20,11 @@ from typing import Dict, List, Tuple
 try:
     from codes.unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
     from codes.unified_training import _safe_filename
+    from codes.naming import checkpoint_path
 except ImportError:
     from unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
     from unified_training import _safe_filename
+    from naming import checkpoint_path
 import torchmetrics
 
 
@@ -38,7 +40,8 @@ class ModelBenchmark:
                    model_path: Path) -> nn.Module:
         """Load trained model weights"""
         try:
-            model.load_state_dict(torch.load(model_path, map_location=self.config.DEVICE))
+            model.load_state_dict(torch.load(model_path, map_location=self.config.DEVICE,
+                                             weights_only=True))
             model.to(self.config.DEVICE)
             model.eval()
             print(f"✅ Loaded {model_name} from {model_path}")
@@ -391,46 +394,46 @@ class ModelBenchmark:
         print(f"✅ Detailed report saved to: {report_path}")
 
 
-def run_benchmark(models_dict: Dict[str, nn.Module], config: Config, 
+def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
                  val_loaders_dict: Dict[str, List[DataLoader]] = None,
-                 val_loader: DataLoader = None) -> pd.DataFrame:
+                 val_loader: DataLoader = None, *,
+                 model_keys: Dict[str, str]) -> pd.DataFrame:
     """
     Run complete benchmark suite, aggregating metrics across all folds if multiple loaders are provided.
-    
+
     Args:
-        models_dict: Dictionary of {model_name: model_instance}
+        models_dict: Dictionary of {display_name: model_instance}
         config: Configuration object
-        val_loaders_dict: Dict mapping model_name to list of DataLoaders (one per fold)
+        val_loaders_dict: Dict mapping display_name to list of DataLoaders (one per fold)
         val_loader: Fallback validation data loader (used if val_loaders_dict is not provided)
-    
+        model_keys: Dict mapping display_name to registry key — checkpoint
+            paths are derived from registry keys only (UB-02/R5); display
+            names stay in logs, plots, and the CSV's Model column
+
     Returns:
         Comparison dataframe
     """
     benchmark = ModelBenchmark(config)
     results_dict = {}
-    
+
     for model_name, model in models_dict.items():
         fold_results = []
         num_folds = config.K_FOLDS
-        
+        model_key = model_keys[model_name]  # hard lookup — a typo must raise (R4)
+
         # Determine loaders for this model
         loaders = []
         if val_loaders_dict and model_name in val_loaders_dict:
             loaders = val_loaders_dict[model_name]
-        
-        # If no fold loaders are provided, fall back to evaluating fold 1 or standard model path using val_loader
+
+        # If no fold loaders are provided, evaluate fold 1 using val_loader
         if not loaders:
-            model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_model.pth"
+            model_path = checkpoint_path(config.OUTPUT_DIR, model_key, 1, "best")
             if not model_path.exists():
-                fold_1_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}_fold_1_model.pth"
-                if fold_1_path.exists():
-                    model_path = fold_1_path
-            
-            if not model_path.exists():
-                print(f"⚠️  Model weights not found for {model_name} (tried standard and fold-1 paths)")
+                print(f"⚠️  Model weights not found for {model_name} at {model_path}")
                 results_dict[model_name] = None
                 continue
-                
+
             loaded_model = benchmark.load_model(model, model_name, model_path)
             if loaded_model is not None and val_loader is not None:
                 results = benchmark.benchmark_model(loaded_model, model_name, val_loader)
@@ -438,18 +441,11 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
             else:
                 results_dict[model_name] = None
             continue
-            
+
         # Iterate over all folds
         for fold_idx in range(num_folds):
-            # Check model name pattern fold_1, fold_2 etc.
-            fold_suffix = f"_fold_{fold_idx + 1}"
-            model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(model_name)}{fold_suffix}_model.pth"
-            
-            if not model_path.exists():
-                # Fallback to alternative model name format used during training: f"{model_name}_Fold-{fold_idx + 1}"
-                alt_model_name = f"{model_name}_Fold-{fold_idx + 1}"
-                model_path = config.OUTPUT_DIR / "models" / f"best_{_safe_filename(alt_model_name)}_model.pth"
-                
+            model_path = checkpoint_path(config.OUTPUT_DIR, model_key,
+                                         fold_idx + 1, "best")
             if not model_path.exists():
                 print(f"⚠️  Model weights not found for {model_name} Fold {fold_idx + 1} at {model_path}")
                 continue

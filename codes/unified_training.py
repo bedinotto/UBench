@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 try:
     from codes.unified_data import Config
+    from codes.naming import checkpoint_path, epoch_checkpoint_glob
 except ImportError:
     from unified_data import Config
+    from naming import checkpoint_path, epoch_checkpoint_glob
 import torchmetrics
 
 
@@ -147,13 +149,14 @@ class UnifiedTrainer:
                  train_loader: DataLoader, val_loader: DataLoader,
                  config: Config, learning_rate: float = 1e-4,
                  num_epochs: int = 100, grad_clip_norm: float = 1.0,
-                 max_nan_tolerance: int = 50):
+                 max_nan_tolerance: int = 50, *,
+                 model_key: str, fold: int):
         """
         Initialize trainer
 
         Args:
             model: PyTorch model to train
-            model_name: Name of the model (for logging)
+            model_name: Name of the model (for logging, plots, metrics files)
             train_loader: Training data loader
             val_loader: Validation data loader
             config: Configuration object
@@ -161,9 +164,14 @@ class UnifiedTrainer:
             num_epochs: Number of training epochs
             grad_clip_norm: Maximum gradient norm for clipping (stabilises AMP)
             max_nan_tolerance: Abort training after this many consecutive NaN batches
+            model_key: Registry key (``unet``/``transunet``/``swin_unet_plus_plus``)
+                — the sole source for checkpoint filenames (UB-02/R5)
+            fold: 1-based fold number, embedded in checkpoint filenames
         """
         self.model = model.to(config.DEVICE)
         self.model_name = model_name
+        self.model_key = model_key
+        self.fold = fold
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.config = config
@@ -263,13 +271,15 @@ class UnifiedTrainer:
     # ------------------------------------------------------------------
 
     def _checkpoint_path(self, epoch: int) -> Path:
-        """Return the expected path for a given epoch checkpoint."""
-        return self._checkpoint_dir / f"{_safe_filename(self.model_name)}_epoch_{epoch:04d}.pth"
+        """Return the expected path for a given epoch checkpoint (UB-02/R5)."""
+        return checkpoint_path(self.config.OUTPUT_DIR, self.model_key,
+                               self.fold, "epoch", epoch=epoch)
 
     def _find_latest_checkpoint(self) -> Optional[Path]:
         """Scan the checkpoint directory for the most recent epoch file."""
         import glob
-        pattern = str(self._checkpoint_dir / f"{_safe_filename(self.model_name)}_epoch_*.pth")
+        pattern = epoch_checkpoint_glob(self.config.OUTPUT_DIR,
+                                        self.model_key, self.fold)
         candidates = sorted(glob.glob(pattern))
         return Path(candidates[-1]) if candidates else None
 
@@ -322,7 +332,8 @@ class UnifiedTrainer:
 
         # Prune old checkpoints, keep the last N
         import glob
-        pattern = str(self._checkpoint_dir / f"{_safe_filename(self.model_name)}_epoch_*.pth")
+        pattern = epoch_checkpoint_glob(self.config.OUTPUT_DIR,
+                                        self.model_key, self.fold)
         all_ckpts = sorted(glob.glob(pattern))
         for old_ckpt in all_ckpts[: -self._CHECKPOINT_KEEP_LAST]:
             try:
@@ -347,7 +358,8 @@ class UnifiedTrainer:
         resume from ``returned_epoch + 1``).
         """
         print(f"  ♻️  Resuming from checkpoint: {ckpt_path.name}")
-        checkpoint = torch.load(ckpt_path, map_location=self.config.DEVICE)
+        checkpoint = torch.load(ckpt_path, map_location=self.config.DEVICE,
+                                weights_only=True)
 
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -576,9 +588,9 @@ class UnifiedTrainer:
             # Save best model (weights-only, based on validation loss)
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                models_dir = self.config.OUTPUT_DIR / "models"
-                models_dir.mkdir(parents=True, exist_ok=True)
-                model_path = models_dir / f"best_{_safe_filename(self.model_name)}_model.pth"
+                model_path = checkpoint_path(self.config.OUTPUT_DIR,
+                                             self.model_key, self.fold, "best")
+                model_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(self.model.state_dict(), model_path)
                 print(f"  ✅ Saved best model to: {model_path}")
 

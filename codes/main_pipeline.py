@@ -195,7 +195,9 @@ class Pipeline:
             val_loader=loaders['val_loader'],
             config=self.config,
             learning_rate=self.config.LEARNING_RATE,
-            num_epochs=self.config.NUM_EPOCHS
+            num_epochs=self.config.NUM_EPOCHS,
+            model_key=model_name,   # registry key (train_all_models resolves it)
+            fold=fold_idx + 1,
         )
         
         trainer.train()
@@ -251,8 +253,10 @@ class Pipeline:
         print("\nStep 6: Comprehensive Benchmarking")
         print("-"*80)
         
-        # Prepare models dictionary
+        # Prepare models dictionary (display name → instance) and the
+        # display→registry key map the benchmark needs for file I/O (UB-02/R5)
         models_dict = {}
+        model_keys = {}
         for model_name in self.models_to_train:
             if model_name == 'swin':
                 registry_name = 'swin_unet_plus_plus'
@@ -266,15 +270,16 @@ class Pipeline:
             else:
                 registry_name = model_name
                 display_name = model_name
-                
+
             kwargs = {
                 'in_channels': 1,
                 'num_classes': self.config.NUM_CLASSES
             }
             if registry_name in ['transunet', 'swin_unet_plus_plus']:
                 kwargs['img_size'] = self.config.IMAGE_SIZE[0]
-                
+
             models_dict[display_name] = create_model(registry_name, **kwargs)
+            model_keys[display_name] = registry_name
             
         # Get loaders for all models and folds (lazy creation)
         val_loaders_dict = {}
@@ -288,7 +293,8 @@ class Pipeline:
             
         print(f"Aggregating benchmark results across all {self.config.K_FOLDS} folds.")
         comparison_df = benchmark_models.run_benchmark(
-            models_dict, self.config, val_loaders_dict=val_loaders_dict
+            models_dict, self.config, val_loaders_dict=val_loaders_dict,
+            model_keys=model_keys
         )
         
         print("\n✅ Benchmark completed successfully")
