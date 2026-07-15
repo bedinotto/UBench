@@ -20,7 +20,7 @@ UBench is a computer vision pipeline for **thermal facial region segmentation** 
 
 ## 2. Current state — READ FIRST
 
-The repository **does not work end-to-end**: a fresh clone running `./run.sh` now preprocesses and trains (UB-01 fixed in T1.1), but the final benchmark silently drops 2 of the 3 models (filename contract mismatch — UB-02) and still exits 0. Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
+**Smoke-level E2E is green** (as of T1.2): on synthetic CPU data the pipeline preprocesses, trains all 3 models, and produces a 3-row `benchmark_comparison.csv`. Smoke-green ≠ real-data-green: a full real-data run (10 subjects, K=5) is plausible but **unverified**; partial-corpus runs (fewer `S*` dirs than `k_folds`) still crash on UB-03; and UB-07 still masks per-model failures behind a SUCCESS banner. Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
 
 **Prime directive:** *No task is "done" until its acceptance test passes in a real execution.* Reading code is not verification. If you cannot run something, say so explicitly and mark the task blocked.
 
@@ -46,7 +46,7 @@ PyTorch is **not** in `requirements/requirements.txt` — on GPU training boxes 
 ### 3.2 Entry points and flag forwarding
 
 ```bash
-./run.sh                                  # Linux/Mac   (⚠ benchmark silently drops 2 of 3 models — UB-02)
+./run.sh                                  # Linux/Mac   (⚠ crashes if #S* dirs < k_folds — UB-03; failures masked — UB-07)
 run.bat                                   # Windows
 ./run.sh --skip-extract --skip-setup --models unet --epochs 10
 ./run.sh --models transunet swin          # model choices: unet, transunet, swin
@@ -108,7 +108,7 @@ run.sh / run.bat
        └─ codes/benchmark_models.py    # cross-model comparison, plots, reports
 ```
 
-**Data-flow contract:** `extract_data.py` → `preprocess_data.py` (produces `data/processed/{images/*.npy, masks/*.png, metadata.csv}`) → `create_single_fold_loader` (lazy, one fold at a time; `create_kfold_data_loaders` exists but the pipeline uses the single-fold variant to avoid worker/semaphore leaks) → `UnifiedTrainer` (saves `outputs/<run>/models/best_<key>_model.pth` + full `checkpoints/`) → `run_benchmark` (loads those weights, writes `benchmark_comparison.csv`, plots, report).
+**Data-flow contract:** `extract_data.py` → `preprocess_data.py` (produces `data/processed/{images/*.npy, masks/*.png, metadata.csv}`) → `create_single_fold_loader` (lazy, one fold at a time; `create_kfold_data_loaders` exists but the pipeline uses the single-fold variant to avoid worker/semaphore leaks) → `UnifiedTrainer` (saves `outputs/<run>/models/best_<key>_fold_<n>_model.pth` + full `checkpoints/`; all paths from `codes/naming.py`) → `run_benchmark` (loads those weights via the same authority, writes `benchmark_comparison.csv`, plots, report).
 
 ### 4.2 Configuration — where truth actually lives
 
@@ -147,7 +147,7 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 | ID | Sev | Location | Defect (verified behavior) | Status |
 |----|-----|----------|----------------------------|--------|
 | UB-01 | Blocker | `run.sh`, `main_pipeline.py` | `preprocess_data.py` is never invoked by any entry point; loaders require `data/processed/metadata.csv` → fresh clone fails 15/15 train attempts. README omits the step. | FIXED@03e6dbb |
-| UB-02 | Blocker | `benchmark_models.py:~443-452` vs `main_pipeline.py:train_model` | Filename contract mismatch: training saves `best_unet_fold_N_model.pth`, `best_swin_unet_plus_plus_fold_N_model.pth` (registry names); benchmark searches `best_u_net_…`/`best_swin_unetplusplus_…` (display names via `_safe_filename`). Only TransUNet matches → comparison silently contains 1 of 3 models. | OPEN |
+| UB-02 | Blocker | `benchmark_models.py:~443-452` vs `main_pipeline.py:train_model` | Filename contract mismatch: training saves `best_unet_fold_N_model.pth`, `best_swin_unet_plus_plus_fold_N_model.pth` (registry names); benchmark searches `best_u_net_…`/`best_swin_unetplusplus_…` (display names via `_safe_filename`). Only TransUNet matches → comparison silently contains 1 of 3 models. | FIXED@dd5fa8d |
 | UB-03 | Blocker | `unified_data.py:~427,~540` | `GroupKFold(n_splits=K_FOLDS)` with `groups=df['dataset']` raises `ValueError` whenever #datasets < K (default 5). | OPEN |
 | UB-04 | Blocker/Docs | `unified_data.py`, `README` | Split semantics contradict docs: leave-subjects-out in code vs stratified-per-dataset in README, whose example fold counts GroupKFold cannot produce. Fix the docs, not the split. | OPEN |
 | UB-05 | Blocker | `main_pipeline.py:121` + `hardware_detector.py` | Batch-size keys `{unet, transunet, swin}` vs lookup `swin_unet_plus_plus` → `.get(key, 8)` silently returns 8. OOM risk at the advertised 6 GB minimum; waste on large GPUs. | OPEN |
@@ -301,7 +301,7 @@ Strict order inside each phase; 0→1→2 sequential, 3 may interleave after 1. 
 ### Phase 1 — Make `./run.sh` work (P0)
 
 - [x] **T1.1 (UB-01)** Pipeline invokes `preprocess_all_data()` when `metadata.csv` absent; `--force-preprocess`; README gains the step. AC met: smoke trains all 3 models × 2 folds to epoch 1 on the synthetic fixture; frontier advanced to UB-02.
-- [ ] **T1.2 (UB-02)** `codes/naming.py` → `checkpoint_path(model_key, fold, kind)`; trainer and benchmark import it; benchmark receives `model_key` alongside display name. AC: `test_filenames.py` round-trip; smoke's 3-row assertion passes.
+- [x] **T1.2 (UB-02)** `codes/naming.py` → `checkpoint_path(output_dir, model_key, fold, kind)`; trainer and benchmark import it; benchmark receives `model_key` alongside display name. AC met: `test_filenames.py` green; smoke passes with all 3 models in the CSV; xfail marker removed.
 - [ ] **T1.3 (UB-05)** Canonical registry keys in `hardware_detector`; replace `.get(k, 8)` with `[k]`. AC: `test_batch_size_keys.py`; simulated 6 GB profile logs swin batch 6.
 - [ ] **T1.4 (UB-03/04)** `effective_k = min(K, n_groups)` + warning; error if `<2`; README rewritten to leave-subjects-out; impossible example output deleted. AC: `test_splits.py` — runs with 1–3 subject dirs; no subject in both train and val of any fold.
 - [ ] **T1.5 (UB-08)** Clamped origin computed once; `crop_to_bbox` returns `(img, origin)`; mask offset uses it. AC: `test_preprocess_offsets.py` — border-bbox mask centroid within 1 px of expectation.
@@ -362,8 +362,9 @@ pytest codes/tests/test_pipeline_smoke.py -x -q                  # E2E gate
 
 # Focused verifications
 python - <<'PY'                                                  # filename contract (UB-02, post-T1.2)
+from pathlib import Path
 from codes.naming import checkpoint_path
-print(checkpoint_path("swin_unet_plus_plus", fold=1, kind="best"))
+print(checkpoint_path(Path("outputs/run"), "swin_unet_plus_plus", fold=1, kind="best"))
 PY
 python -m codes.transunet                                        # import sanity (UB-21, post-T3.6)
 
