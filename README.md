@@ -119,6 +119,16 @@ chmod +x run.sh
 run.bat
 ```
 
+> **Offline preprocessing is automatic.** Training reads pre-computed
+> arrays from `data/processed/` (created by `codes/preprocess_data.py`).
+> The pipeline runs this step for you whenever
+> `data/processed/metadata.csv` is missing. To rebuild the preprocessed
+> data unconditionally (e.g. after changing the raw data or annotations):
+>
+> ```bash
+> ./run.sh --force-preprocess
+> ```
+
 ### Step 3: Check Results
 After training completes, find your results in:
 ```text

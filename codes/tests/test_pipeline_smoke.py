@@ -2,17 +2,18 @@
 E2E smoke test — the merge gate (CLAUDE.md §7.3).
 
 This test is the single definition of "the repo works end-to-end."
-It is intentionally marked xfail(strict=True) because UB-01 prevents
-the pipeline from completing until T1.1 lands.  strict=True means
-the test suite will FAIL if the pipeline somehow passes before the
-xfail marker is removed — ensuring the marker is removed when UB-01 is
-fixed.
+It is intentionally marked xfail(strict=True) because UB-02 prevents
+all three models from reaching the benchmark CSV until T1.2 lands.
+strict=True means the test suite will FAIL if the pipeline somehow
+passes before the xfail marker is removed — ensuring the marker is
+removed when the frontier defect is fixed.
 
-Expected current failure path:
-    create_single_fold_loader() → FileNotFoundError(data/processed/metadata.csv)
-    caught by train_all_models try/except (UB-07 silent swallow)
-    re-raised inside run_benchmark() → caught by Pipeline.run() → returns False
-    main() → sys.exit(1) → subprocess rc=1 → assert rc==0 fails → XFAIL ✓
+Expected current failure path (post-T1.1):
+    preprocessing runs, all 3 models train and save checkpoints under
+    registry names (best_unet_…, best_swin_unet_plus_plus_…), but the
+    benchmark searches display-name-derived paths (best_u_net_…,
+    best_swin_unetplusplus_…) → only TransUNet loads → rc=0 with a
+    1-row CSV → the 3-row assertion fails → XFAIL ✓
 
 The subprocess runs the REAL entry point (codes/main_pipeline.py) with
 UBENCH_ALLOW_CPU=1 so hardware detection succeeds on CPU-only machines
@@ -42,8 +43,7 @@ def run_pipeline_subprocess(
 
     Runs ``codes/main_pipeline.py`` — the same script ``run.sh`` invokes —
     with ``UBENCH_ALLOW_CPU=1`` so hardware detection returns a CPU
-    profile on machines without NVIDIA GPUs (UB-23).  The first real
-    failure is then UB-01 (metadata.csv missing).
+    profile on machines without NVIDIA GPUs (UB-23).
 
     Parameters
     ----------
@@ -96,11 +96,14 @@ def read_latest(glob_pattern: str) -> pd.DataFrame:
 # smoke test"; updated to "strict-xfail for UB-01 keeps suite green" so CI
 # always reports green while the expected failure is tracked here.
 # ---------------------------------------------------------------------------
-@pytest.mark.xfail(reason="UB-01: preprocessing not wired into pipeline", strict=True)
+@pytest.mark.xfail(
+    reason="UB-02: checkpoint filename contract mismatch (frontier after T1.1)",
+    strict=True,
+)
 def test_full_pipeline_smoke(synthetic_dataset, monkeypatch):
     """Full end-to-end pipeline smoke (UB-01/02/03/05/07 guard).
 
-    Once UB-01 is fixed (T1.1), this test should pass and the xfail
+    Once UB-02 is fixed (T1.2), this test should pass and the xfail
     marker must be removed.  With strict=True, a surprise pass turns
     the run RED, forcing the marker removal.
 

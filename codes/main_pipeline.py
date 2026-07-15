@@ -29,6 +29,7 @@ from codes.unified_data import (
     seed_everything, MultiDirectoryDataLoader, shutdown_data_loaders,
 )
 from codes.unified_training import UnifiedTrainer
+from codes.preprocess_data import preprocess_all_data
 
 # Import model architectures and registry
 from codes.model_registry import create_model
@@ -42,17 +43,21 @@ import codes.benchmark_models as benchmark_models
 class Pipeline:
     """Main training pipeline orchestrator"""
     
-    def __init__(self, models_to_train=None, skip_benchmark=False):
+    def __init__(self, models_to_train=None, skip_benchmark=False,
+                 force_preprocess: bool = False):
         """
         Initialize pipeline
-        
+
         Args:
-            models_to_train: List of model names to train. 
+            models_to_train: List of model names to train.
                            None = all models. Options: ['unet', 'transunet', 'swin']
             skip_benchmark: If True, skip benchmarking after training
+            force_preprocess: If True, rebuild data/processed even when
+                           metadata.csv already exists
         """
         self.models_to_train = models_to_train or ['unet', 'transunet', 'swin']
         self.skip_benchmark = skip_benchmark
+        self.force_preprocess = force_preprocess
         
         print("\n" + "="*80)
         print("THERMAL FACE DETECTION - AUTOMATED TRAINING PIPELINE")
@@ -102,9 +107,30 @@ class Pipeline:
         # Store training results (metrics only — models are saved to disk)
         self.training_results = {}
     
+    def ensure_preprocessed_data(self):
+        """Run offline preprocessing when its outputs are missing (UB-01, T1.1).
+
+        Training and benchmarking load ``data/processed/{images,masks}`` via
+        ``metadata.csv``; a fresh clone has neither, so this stage creates
+        them.  ``--force-preprocess`` rebuilds unconditionally.
+        """
+        print("\nStep 3: Offline Preprocessing")
+        print("-"*80)
+        metadata_path = self.config.PROCESSED_DIR / "metadata.csv"
+        if metadata_path.exists() and not self.force_preprocess:
+            print(f"✅ Preprocessed data found at {metadata_path} — skipping "
+                  f"(use --force-preprocess to rebuild)")
+            return
+        if self.force_preprocess:
+            print("--force-preprocess set — rebuilding preprocessed data")
+        else:
+            print(f"Preprocessed data not found at {metadata_path} — "
+                  f"running offline preprocessing")
+        preprocess_all_data()
+
     def load_shared_data(self):
         """Load annotations once (lightweight) — DataLoaders are created lazily."""
-        print("\nStep 3: Data Loading (annotations)")
+        print("\nStep 4: Data Loading (annotations)")
         print("-"*80)
 
         # Load annotations from        # (Shared data loader discovery removed as we use offline preprocessed arrays)
@@ -189,7 +215,7 @@ class Pipeline:
     
     def train_all_models(self):
         """Train all selected models sequentially over all folds"""
-        print("\nStep 4: Model Training (K-Folds)")
+        print("\nStep 5: Model Training (K-Folds)")
         print("-"*80)
         
         start_time = datetime.now()
@@ -222,7 +248,7 @@ class Pipeline:
             print("\n⚠️  Skipping benchmark (--skip-benchmark flag set)")
             return
         
-        print("\nStep 5: Comprehensive Benchmarking")
+        print("\nStep 6: Comprehensive Benchmarking")
         print("-"*80)
         
         # Prepare models dictionary
@@ -272,6 +298,9 @@ class Pipeline:
     def run(self):
         """Execute the complete pipeline"""
         try:
+            # Ensure offline-preprocessed arrays exist (UB-01)
+            self.ensure_preprocessed_data()
+
             # Load shared annotation data (lightweight)
             self.load_shared_data()
             
@@ -359,6 +388,11 @@ def main():
         action='store_true',
         help='Enable PyTorch anomaly detection to debug NaN/Inf gradients'
     )
+    parser.add_argument(
+        '--force-preprocess',
+        action='store_true',
+        help='Rebuild data/processed even if metadata.csv already exists'
+    )
 
     args = parser.parse_args()
 
@@ -375,7 +409,8 @@ def main():
     # Create and run pipeline
     pipeline = Pipeline(
         models_to_train=args.models,
-        skip_benchmark=args.skip_benchmark
+        skip_benchmark=args.skip_benchmark,
+        force_preprocess=args.force_preprocess
     )
 
     # ── Global error catcher ─────────────────────────────────────────────
