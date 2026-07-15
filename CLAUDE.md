@@ -9,13 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 Rules:
-
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-
----
 
 ## 1. What this is
 
@@ -44,7 +41,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements/requirements.txt
 ```
 
-PyTorch is **not** in `requirements/requirements.txt` — on GPU training boxes it is installed by `codes/setup.py` with a CUDA-specific index URL (`cu121`/`cu118`) to avoid pip's CPU-only default (⚠ UB-20: unpinned + aging index; T3.5 replaces this). Python 3.13+ is unsupported (no CUDA wheels); use 3.10/3.11. All remediation work happens **CPU-first**; GPU is required only for Phase-3 retraining and real benchmark numbers.
+PyTorch is **not** in `requirements/requirements.txt` — on GPU training boxes it is installed by `codes/setup.py` with a CUDA-specific index URL (`cu121`/`cu118`) to avoid pip's CPU-only default (⚠ UB-20: unpinned + aging index; T3.5 replaces this). Python 3.13 is verified for CPU-only dev work (Phase 0/D1); GPU training boxes remain on 3.10/3.11 until T3.5 verifies CUDA wheels. All remediation work happens **CPU-first**; GPU is required only for Phase-3 retraining and real benchmark numbers.
 
 ### 3.2 Entry points and flag forwarding
 
@@ -167,9 +164,10 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 | UB-17 | Method | `swin_unet_plus_plus.py` | Shifted windows **without attention mask**; **no relative position bias & no positional embedding** (window attention permutation-invariant; deepest-stage shift a no-op); CNN decoder; no deep supervision; redundant third nested column; final 4× bilinear jump from H/4. | OPEN |
 | UB-18 | Method | `unified_training.py` | Identical hyperparameters ≠ fair across families; best checkpoint by val *loss* vs headline mIoU; selection and reporting on same folds (no held-out test set). | OPEN |
 | UB-19 | Method | `utils.py`, `unified_data.py` | Per-image min–max destroys absolute temperature; `RandomBrightnessContrast` physically dubious on thermal; `np.vectorize` raw→°C is a per-pixel Python loop. | OPEN |
-| UB-20 | Method/Env | `unified_data.py`, `setup.py`, requirements | No DataLoader `generator`/`worker_init_fn`; `cudnn.benchmark` contradiction; unpinned `>=` deps (albumentations 2.x breaks `ShiftScaleRotate(value=…)`); `--force-reinstall --no-deps` torch against aging `cu121` index; system-Python installs. | OPEN |
+| UB-20 | Method/Env | `unified_data.py`, `setup.py`, requirements | No DataLoader `generator`/`worker_init_fn`; `cudnn.benchmark` contradiction; unpinned `>=` deps (albumentations 2.x breaks `ShiftScaleRotate(value=…)`); `--force-reinstall --no-deps` torch against aging `cu121` index; system-Python installs. *Note: albumentations 2.0.8 rejects `ShiftScaleRotate(value=…)` (Phase 0/D2); pinned `<2.0` in Session 1; API migration lands with T3.4.* | OPEN |
 | UB-21 | Hygiene | `codes/*.py` | Three import styles; no `__init__.py`; model files crash if run directly (relative imports). | OPEN |
 | UB-22 | Hygiene | repo root, `.gitignore` | Scratch scripts committed; `inference_comparison.py` orphaned (wire or delete); `codes/tests/*` gitignored while `pytest` is required; `CLAUDE.md` gitignored. | OPEN |
+| UB-23 | Blocker | `codes/hardware_detector.py` | `detect()` calls `sys.exit(1)` when CUDA is unavailable; contradicts §3.1 CPU-first doctrine; blocks CI E2E. Phase 0 worked around it with a test-only runner that patches detection (to be removed by the UB-23 fix). | OPEN |
 
 ---
 
@@ -202,9 +200,10 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 ### 7.1 Layout & conventions
 
 ```
+conftest.py                     # root: collect_ignore_glob for legacy ad-hoc debug scripts (removal in T2.6)
 codes/tests/
 ├── __init__.py
-├── conftest.py                 # synthetic_dataset fixture (§7.2), tmp CWD, seeding
+├── conftest.py                 # synthetic_dataset fixture (§7.2), collect_ignore_glob, seeding
 ├── test_pipeline_smoke.py      # E2E gate — THE definition of "the repo works"
 ├── test_filenames.py           # UB-02: train↔benchmark path round-trip
 ├── test_splits.py              # UB-03/04: fold-count guard, subject exclusivity
@@ -215,7 +214,7 @@ codes/tests/
 └── test_models_forward.py      # each registered model: (2,1,256,256)→(2,10,256,256)
 ```
 
-Pytest runner; all tests CPU-only and green in < ~5 min total; `NUM_WORKERS=0` inside tests; seeds fixed in `conftest.py`. Tests are committed (`.gitignore` fix in T0.2).
+Pytest runner; all tests CPU-only and green in < ~5 min total; `NUM_WORKERS=0` inside tests; seeds fixed in `conftest.py`. Tests are committed (`.gitignore` fix in T0.2). The smoke test runs `codes/main_pipeline.py` as a subprocess with `UBENCH_ALLOW_CPU=1` so hardware detection succeeds on CPU-only machines (UB-23).
 
 ### 7.2 Synthetic-dataset fixture (build exactly this)
 
@@ -294,8 +293,8 @@ Strict order inside each phase; 0→1→2 sequential, 3 may interleave after 1. 
 
 ### Phase 0 — Safety net (before touching any bug)
 
-- [ ] **T0.1** `codes/tests/` skeleton + synthetic fixture (§7.2) + smoke test (§7.3) as a *failing* test. AC: `pytest -x` fails with UB-01's FileNotFoundError — the correct first failure.
-- [ ] **T0.2** Un-ignore `codes/tests/*` and `CLAUDE.md`; add `codes/__init__.py`, `codes/tests/__init__.py`; CI workflow (§7.4) + `pyproject.toml` with ruff config. AC: CI runs, red only on the smoke test.
+- [x] **T0.1** `codes/tests/` skeleton + synthetic fixture (§7.2) + smoke test (§7.3) as a *failing* test. AC met: smoke test fails with UB-01's FileNotFoundError, tracked as `xfail(strict=True)` so the suite stays green.
+- [x] **T0.2** Un-ignore `codes/tests/*` and `CLAUDE.md`; add `codes/__init__.py`, `codes/tests/__init__.py`; CI workflow (§7.4) + `pyproject.toml` with ruff config. AC: suite green; smoke test `xfail(strict=True)` enforcing the current frontier defect.
 
 ### Phase 1 — Make `./run.sh` work (P0)
 
