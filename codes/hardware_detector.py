@@ -38,29 +38,34 @@ class HardwareProfile:
         self.num_workers = self._calculate_workers()
 
     def _calculate_batch_sizes(self) -> Dict[str, int]:
-        """Calculate optimal batch sizes based on GPU memory"""
+        """Calculate optimal batch sizes based on GPU memory.
+
+        Keys are the canonical model-registry names (R5/UB-05); consumers
+        do hard ``[key]`` lookups, so every registered model needs an
+        entry in every tier.
+        """
         if self.device == "cpu":
             # CPU mode (UBENCH_ALLOW_CPU=1) exists for tests/CI, not
-            # throughput.  Keys stay {unet, transunet, swin} until T1.3.
-            return {"unet": 4, "transunet": 2, "swin": 2}
+            # throughput.
+            return {"unet": 4, "transunet": 2, "swin_unet_plus_plus": 2}
         if self.gpu_memory_gb < 5.5:
             print("[WARNING] GPU memory below 6GB - may encounter issues")
-            return {"unet": 4, "transunet": 3, "swin": 3}
+            return {"unet": 4, "transunet": 3, "swin_unet_plus_plus": 3}
         elif self.gpu_memory_gb < 7:
             # GTX 1660 Ti baseline (6GB)
-            return {"unet": 8, "transunet": 6, "swin": 6}
+            return {"unet": 8, "transunet": 6, "swin_unet_plus_plus": 6}
         elif self.gpu_memory_gb < 11:
             # 8GB cards (RTX 2070, RTX 3060)
-            return {"unet": 12, "transunet": 8, "swin": 8}
+            return {"unet": 12, "transunet": 8, "swin_unet_plus_plus": 8}
         elif self.gpu_memory_gb < 16:
             # 12GB cards (RTX 3060 12GB, RTX 4070)
-            return {"unet": 16, "transunet": 12, "swin": 10}
+            return {"unet": 16, "transunet": 12, "swin_unet_plus_plus": 10}
         elif self.gpu_memory_gb < 24:
             # 16GB cards (RTX 4060 Ti 16GB)
-            return {"unet": 24, "transunet": 16, "swin": 14}
+            return {"unet": 24, "transunet": 16, "swin_unet_plus_plus": 14}
         else:
             # 24GB+ cards (RTX 3090, RTX 4090, A5000)
-            return {"unet": 32, "transunet": 24, "swin": 20}
+            return {"unet": 32, "transunet": 24, "swin_unet_plus_plus": 20}
     
     def _calculate_workers(self) -> int:
         """
@@ -128,9 +133,9 @@ class HardwareProfile:
                 f"  GPU: {self.gpu_name} ({self.gpu_memory_gb:.1f} GB)\n"
                 f"  CPU Cores: {self.cpu_count}\n"
                 f"  RAM: {self.ram_gb:.1f} GB\n"
-                f"  Batch Sizes: UNet={self.batch_sizes['unet']}, "
-                f"TransUNet={self.batch_sizes['transunet']}, "
-                f"Swin={self.batch_sizes['swin']}\n"
+                f"  Batch Sizes: unet={self.batch_sizes['unet']}, "
+                f"transunet={self.batch_sizes['transunet']}, "
+                f"swin_unet_plus_plus={self.batch_sizes['swin_unet_plus_plus']}\n"
                 f"  Workers: {self.num_workers}")
 
 

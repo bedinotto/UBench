@@ -144,7 +144,9 @@ class Pipeline:
         fold's workers are spawned, preventing semaphore / shared-memory
         leaks from discarded loaders.
         """
-        batch_size = self.hardware_profile.batch_sizes.get(model_name, 8)
+        # Hard lookup (R4/UB-05): model_name must be a registry key with a
+        # per-tier batch size; an unknown key raises instead of defaulting.
+        batch_size = self.hardware_profile.batch_sizes[model_name]
         num_workers = self.hardware_profile.num_workers
         if 'NUM_WORKERS' in os.environ:
             num_workers = int(os.environ['NUM_WORKERS'])
@@ -284,7 +286,7 @@ class Pipeline:
         # Get loaders for all models and folds (lazy creation)
         val_loaders_dict = {}
         for display_name in models_dict.keys():
-            model_key = 'unet' if display_name == 'U-Net' else 'transunet' if display_name == 'TransUNet' else 'swin' if display_name == 'Swin-UNet++' else display_name
+            model_key = model_keys[display_name]
             loaders = []
             for fold_idx in range(self.config.K_FOLDS):
                 loaders_data = self._get_fold_loaders(model_key, fold_idx)
