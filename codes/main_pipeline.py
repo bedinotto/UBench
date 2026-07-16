@@ -41,11 +41,26 @@ import codes.swin_unet_plus_plus
 import codes.benchmark_models as benchmark_models
 
 
+def write_error_log(text: str) -> Path:
+    """Persist *text* to a timestamped error log and return its path.
+
+    Single authority for error-log placement: the run's log dir when the
+    pipeline got far enough to export ``UBENCH_LOG_DIR``, the current
+    directory otherwise.
+    """
+    log_dir = Path(os.environ.get("UBENCH_LOG_DIR", "."))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    error_log_path = log_dir / f"error_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    with open(error_log_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return error_log_path
+
+
 class Pipeline:
     """Main training pipeline orchestrator"""
     
     def __init__(self, models_to_train=None, skip_benchmark=False,
-                 force_preprocess: bool = False):
+                 force_preprocess: bool = False, fail_fast: bool = False):
         """
         Initialize pipeline
 
@@ -55,10 +70,13 @@ class Pipeline:
             skip_benchmark: If True, skip benchmarking after training
             force_preprocess: If True, rebuild data/processed even when
                            metadata.csv already exists
+            fail_fast: If True, abort the run on the first model/fold
+                           training failure instead of continuing
         """
         self.models_to_train = models_to_train or ['unet', 'transunet', 'swin']
         self.skip_benchmark = skip_benchmark
         self.force_preprocess = force_preprocess
+        self.fail_fast = fail_fast
         
         print("\n" + "="*80)
         print("THERMAL FACE DETECTION - AUTOMATED TRAINING PIPELINE")
@@ -107,6 +125,10 @@ class Pipeline:
         
         # Store training results (metrics only — models are saved to disk)
         self.training_results = {}
+
+        # Failure registry (UB-07): every caught per-model/fold exception is
+        # recorded here; the SUCCESS banner and exit code depend on it.
+        self.failures: list[dict] = []
     
     def ensure_preprocessed_data(self):
         """Run offline preprocessing when its outputs are missing (UB-01, T1.1).
@@ -172,6 +194,13 @@ class Pipeline:
         print("\n" + "="*80)
         print(f"TRAINING: {model_name.upper()} (Fold {fold_idx + 1}/{self.config.K_FOLDS})")
         print("="*80)
+
+        # Test-only failure injection (UB-07 tests): inert unless the env
+        # var names this exact model key.
+        if os.environ.get("UBENCH_INJECT_FAIL") == model_name:
+            raise RuntimeError(
+                f"Injected failure for {model_name} (UBENCH_INJECT_FAIL)"
+            )
         
         # Clear GPU cache
         if torch.cuda.is_available():
@@ -238,14 +267,27 @@ class Pipeline:
                 try:
                     self.train_model(registry_name, fold_idx)
                 except Exception as e:
+                    self.failures.append({
+                        'model': registry_name,
+                        'fold': fold_idx + 1,
+                        'error': repr(e),
+                        'traceback': traceback.format_exc(),
+                    })
                     print(f"❌ {model_name} training failed on Fold {fold_idx + 1}: {e}")
-        
+                    if self.fail_fast:
+                        print("--fail-fast set — aborting on first failure")
+                        raise
+
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds() / 60
-        
-        print("\n" + "="*80)
-        print(f"✅ All training completed in {total_duration:.1f} minutes")
-        print("="*80)
+
+        if self.failures:
+            print(f"\n⚠️  Training loop finished in {total_duration:.1f} minutes "
+                  f"with {len(self.failures)} failure(s)")
+        else:
+            print("\n" + "="*80)
+            print(f"✅ All training completed in {total_duration:.1f} minutes")
+            print("="*80)
     
     def run_benchmark(self):
         """Run comprehensive benchmark on all trained models, aggregating across all folds"""
@@ -326,10 +368,16 @@ class Pipeline:
             
             # Run benchmark
             self.run_benchmark()
-            
+
             # Final summary
             self.print_summary()
-            
+
+            # Honest exit (UB-07): the SUCCESS banner is earned only when
+            # every model \u00d7 fold trained; otherwise summarize and fail.
+            if self.failures:
+                self._report_failures()
+                return False
+
             print("\n" + "="*80)
             print("\u2705\u2705\u2705 PIPELINE COMPLETED SUCCESSFULLY \u2705\u2705\u2705")
             print("="*80)
@@ -340,18 +388,40 @@ class Pipeline:
             print(f"  Logs:    {self.config.LOG_DIR}")
             print(f"  Console: {self.run_log_dir / 'pipeline.log'}")
             print("="*80 + "\n")
-            
+
             return True
-            
+
         except Exception as e:
             print(f"\n\u274c Pipeline failed: {e}")
-            import traceback
             traceback.print_exc()
+            if self.failures:
+                self._report_failures()
             return False
         finally:
             # Always close the log file cleanly, even on failure
             self._tee.stop()
     
+    def _report_failures(self):
+        """Print the end-of-run failure summary and persist tracebacks (UB-07)."""
+        print("\n" + "="*80)
+        print(f"❌ PIPELINE FINISHED WITH {len(self.failures)} TRAINING FAILURE(S)")
+        print("="*80)
+        sections = []
+        for failure in self.failures:
+            print(f"  ❌ {failure['model']} fold {failure['fold']}: {failure['error']}")
+            sections.append(
+                f"{failure['model']} fold {failure['fold']}: {failure['error']}\n"
+                f"{failure['traceback']}"
+            )
+        error_log_path = write_error_log(
+            "UBench Pipeline Training Failures\n"
+            f"Occurred at: {datetime.now().isoformat()}\n"
+            + "=" * 70 + "\n\n"
+            + ("\n" + "=" * 70 + "\n\n").join(sections)
+        )
+        print(f"Full tracebacks written to: {error_log_path}")
+        print("="*80)
+
     def print_summary(self):
         """Print training summary averaged across folds"""
         print("\n" + "="*80)
@@ -410,6 +480,11 @@ def main():
         action='store_true',
         help='Rebuild data/processed even if metadata.csv already exists'
     )
+    parser.add_argument(
+        '--fail-fast',
+        action='store_true',
+        help='Abort the run on the first model/fold training failure'
+    )
 
     args = parser.parse_args()
 
@@ -423,33 +498,29 @@ def main():
         # This will be used by Config class
         os.environ['NUM_EPOCHS'] = str(args.epochs)
 
-    # Create and run pipeline
-    pipeline = Pipeline(
-        models_to_train=args.models,
-        skip_benchmark=args.skip_benchmark,
-        force_preprocess=args.force_preprocess
-    )
-
     # ── Global error catcher ─────────────────────────────────────────────
-    # Any unhandled exception (OOM, dimension mismatch, disk full, etc.) is
-    # written to a dedicated error log file so the exact traceback is never
-    # lost, even if stdout/stderr are redirected or the console window closes.
+    # Any unhandled exception — including a Pipeline constructor crash
+    # (missing data dir, hardware detection) — is written to a dedicated
+    # error log file so the exact traceback is never lost, even if
+    # stdout/stderr are redirected or the console window closes (UB-07).
     try:
+        pipeline = Pipeline(
+            models_to_train=args.models,
+            skip_benchmark=args.skip_benchmark,
+            force_preprocess=args.force_preprocess,
+            fail_fast=args.fail_fast
+        )
         success = pipeline.run()
     except Exception as e:  # noqa: BLE001
         tb_str = traceback.format_exc()
 
-        # Prefer the run-specific log dir; fall back to the repo root.
-        log_dir = Path(os.environ.get("UBENCH_LOG_DIR", "."))
-        log_dir.mkdir(parents=True, exist_ok=True)
-        error_log_path = log_dir / f"error_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-
-        with open(error_log_path, "w", encoding="utf-8") as f:
-            f.write(f"UBench Pipeline Fatal Error\n")
-            f.write(f"Occurred at: {datetime.now().isoformat()}\n")
-            f.write(f"Exception:   {type(e).__name__}: {e}\n")
-            f.write("=" * 70 + "\n\n")
-            f.write(tb_str)
+        error_log_path = write_error_log(
+            "UBench Pipeline Fatal Error\n"
+            f"Occurred at: {datetime.now().isoformat()}\n"
+            f"Exception:   {type(e).__name__}: {e}\n"
+            + "=" * 70 + "\n\n"
+            + tb_str
+        )
 
         # Echo to stderr so it is still visible in the console / log file.
         print(f"\n\u274c FATAL ERROR — full traceback written to: {error_log_path}",

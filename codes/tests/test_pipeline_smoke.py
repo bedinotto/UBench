@@ -8,9 +8,10 @@ naming authority (codes/naming.py, T1.2), and the benchmark CSV
 contains all three models.
 
 Scope note: green here means smoke-level E2E on synthetic CPU data.
-It does NOT cover real-data risks — UB-07 (per-model failures masked)
-remains open, so rc == 0 is necessary but not sufficient evidence.
-Partial-corpus fold reduction (UB-03) is covered by test_splits.py.
+Since T1.6 (UB-07) rc == 0 means every model × fold actually trained:
+per-model failures are recorded, summarized, and fatal, so this test
+also asserts the absence of a failure summary.  Partial-corpus fold
+reduction (UB-03) is covered by test_splits.py.
 
 The subprocess runs the REAL entry point (codes/main_pipeline.py) with
 UBENCH_ALLOW_CPU=1 so hardware detection succeeds on CPU-only machines
@@ -109,9 +110,13 @@ def test_full_pipeline_smoke(synthetic_dataset, monkeypatch):
         f"{output[-3000:]}"
     )
 
+    # UB-07: rc == 0 must mean zero recorded failures — belt and braces.
+    assert "TRAINING FAILURE" not in output
+    assert "training failed" not in output
+
     # Guards: UB-01 (data loaded), UB-02 (all 3 model files found),
     #         UB-03 (GroupKFold did not crash), UB-05 (batch lookup OK),
-    #         UB-07 (no silent failure with exit 0)
+    #         UB-07 (failures are fatal, so exit 0 means all trained)
     df = read_latest("outputs/*/benchmark_comparison.csv")
     assert set(df["Model"]) == {"U-Net", "TransUNet", "Swin-UNet++"}, (
         f"Expected all 3 models in benchmark CSV, got: {set(df['Model'])}"

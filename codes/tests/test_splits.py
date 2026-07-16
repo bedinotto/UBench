@@ -82,9 +82,10 @@ def test_pipeline_runs_partial_corpus(synthetic_dataset, monkeypatch):
     effective K=3 (the UB-03 partial-corpus crash scenario).
 
     LIMIT_SAMPLES=12 keeps exactly S1–S3 (metadata rows are grouped by
-    subject in sorted discovery order, 4 frames each).  With UB-07 still
-    open, rc == 0 alone is weak evidence, so the output must also show
-    the reduction warning, fold 3 training, and no swallowed failures.
+    subject in sorted discovery order, 4 frames each).  Since T1.6
+    (UB-07) failures are fatal, so rc == 0 already implies none were
+    swallowed; the output assertions on the reduction warning and fold 3
+    training remain as direct evidence of the effective K.
     """
     from codes.tests.test_pipeline_smoke import run_pipeline_subprocess
 

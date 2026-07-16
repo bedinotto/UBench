@@ -149,6 +149,7 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
     echo "  --models MODEL [MODEL...] Train only specific models (unet, transunet, swin)"
     echo "  --skip-benchmark          Skip benchmarking after training"
     echo "  --epochs N                Number of training epochs (default: 100)"
+    echo "  --fail-fast               Abort on the first model/fold training failure"
     echo "  --help, -h                Show this help message"
     echo ""
     echo "Examples:"
