@@ -7,6 +7,7 @@ Supports multiple dataset directories (S1, S2, ..., S10)
 
 import os
 import platform
+import warnings
 import numpy as np
 import pandas as pd
 import json
@@ -410,25 +411,73 @@ class ThermalFaceDataset(Dataset):
         return thermal_img, mask, sample_id
 
 
+def load_split_metadata(config: Config) -> pd.DataFrame:
+    """Read the processed metadata rows that feed the CV split.
+
+    Applies the ``LIMIT_SAMPLES`` truncation here so that every consumer
+    (fold-count resolution, loader creation) sees the same rows.
+    """
+    metadata_path = config.PROCESSED_DIR / "metadata.csv"
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Preprocessed data not found at {metadata_path}. "
+            f"Please run 'python codes/preprocess_data.py' first."
+        )
+    df = pd.read_csv(metadata_path)
+    if 'LIMIT_SAMPLES' in os.environ:
+        df = df.head(int(os.environ['LIMIT_SAMPLES']))
+    return df
+
+
+def resolve_fold_count(requested_k: int, groups: pd.Series) -> int:
+    """Resolve the effective number of leave-subjects-out CV folds (UB-03).
+
+    ``GroupKFold(groups=df['dataset'])`` holds out whole subject datasets
+    per fold, so it can never produce more splits than there are distinct
+    subjects.
+
+    Args:
+        requested_k: Configured ``K_FOLDS`` value.
+        groups: Per-sample group labels (the metadata ``dataset`` column).
+
+    Returns:
+        ``min(requested_k, n_groups)``, warning loudly when reduced.
+
+    Raises:
+        ValueError: When fewer than 2 subject datasets are present.
+    """
+    group_names = sorted(pd.unique(groups))
+    n_groups = len(group_names)
+    if n_groups < 2:
+        raise ValueError(
+            f"Leave-subjects-out CV requires >=2 subject datasets; found "
+            f"{n_groups}: {group_names}. Add more S* subject directories "
+            f"under data/ (or raise LIMIT_SAMPLES so more subjects survive "
+            f"truncation)."
+        )
+    if requested_k > n_groups:
+        message = (
+            f"K_FOLDS={requested_k} exceeds the {n_groups} available subject "
+            f"datasets ({group_names}); leave-subjects-out CV holds out whole "
+            f"subjects, so the fold count is reduced to {n_groups}."
+        )
+        # print for the pipeline's stdout logs; warnings.warn for callers/tests
+        print(f"[WARNING] {message}")
+        warnings.warn(message, stacklevel=2)
+        return n_groups
+    return requested_k
+
+
 def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
                               shared_data_loader: MultiDirectoryDataLoader = None):
     """
     Create K-Fold training and validation data loaders from preprocessed offline arrays
     """
-    metadata_path = config.PROCESSED_DIR / "metadata.csv"
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Preprocessed data not found at {metadata_path}. Please run 'python codes/preprocess_data.py' first.")
-        
-    df = pd.read_csv(metadata_path)
-    
-    if 'LIMIT_SAMPLES' in os.environ:
-        limit = int(os.environ['LIMIT_SAMPLES'])
-        df = df.head(limit)
-        
-    from sklearn.model_selection import GroupKFold
-    
-    # Use GroupKFold to prevent data leakage from the same dataset source (e.g., S1)
-    gkf = GroupKFold(n_splits=config.K_FOLDS)
+    df = load_split_metadata(config)
+
+    # Leave-subjects-out CV: whole subject datasets held out per fold (UB-03/04)
+    effective_k = resolve_fold_count(config.K_FOLDS, df['dataset'])
+    gkf = GroupKFold(n_splits=effective_k)
     split_generator = gkf.split(df, groups=df['dataset'])
     
     folds_data = []
@@ -444,7 +493,7 @@ def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
     pin_memory = torch.cuda.is_available()
     persistent = num_workers > 0 and platform.system() != 'Windows'
     
-    print(f"\nData Split (GroupKFold: {config.K_FOLDS}):")
+    print(f"\nData Split (leave-subjects-out GroupKFold: {effective_k}):")
     
     for fold_idx, (train_idx, val_idx) in enumerate(split_generator):
         train_df = df.iloc[train_idx]
@@ -528,22 +577,11 @@ def create_single_fold_loader(config: Config, fold_idx: int, batch_size: int,
         ``{'train_loader': DataLoader, 'val_loader': DataLoader,
         'train_ids': list, 'val_ids': list}``
     """
-    metadata_path = config.PROCESSED_DIR / "metadata.csv"
-    if not metadata_path.exists():
-        raise FileNotFoundError(
-            f"Preprocessed data not found at {metadata_path}. "
-            f"Please run 'python codes/preprocess_data.py' first."
-        )
+    df = load_split_metadata(config)
 
-    df = pd.read_csv(metadata_path)
-
-    if 'LIMIT_SAMPLES' in os.environ:
-        limit = int(os.environ['LIMIT_SAMPLES'])
-        df = df.head(limit)
-
-    from sklearn.model_selection import GroupKFold
-
-    gkf = GroupKFold(n_splits=config.K_FOLDS)
+    # Leave-subjects-out CV: whole subject datasets held out per fold (UB-03/04)
+    effective_k = resolve_fold_count(config.K_FOLDS, df['dataset'])
+    gkf = GroupKFold(n_splits=effective_k)
     split_generator = gkf.split(df, groups=df['dataset'])
 
     # Advance the generator to the requested fold
@@ -551,7 +589,9 @@ def create_single_fold_loader(config: Config, fold_idx: int, batch_size: int,
         if i == fold_idx:
             break
     else:
-        raise IndexError(f"fold_idx {fold_idx} is out of range for K={config.K_FOLDS}")
+        raise IndexError(
+            f"fold_idx {fold_idx} is out of range for effective K={effective_k}"
+        )
 
     train_df = df.iloc[train_idx]
     val_df = df.iloc[val_idx]

@@ -33,6 +33,7 @@ _MAIN_PIPELINE = _REPO_ROOT / "codes" / "main_pipeline.py"
 def run_pipeline_subprocess(
     models: list[str],
     timeout: int = 360,
+    extra_args: list[str] | None = None,
 ) -> tuple[int, str]:
     """Invoke the real pipeline entry point in a subprocess.
 
@@ -47,6 +48,9 @@ def run_pipeline_subprocess(
     timeout:
         Hard wall-clock timeout in seconds.  CI must comfortably finish
         all three models at 1 epoch on 64×64 synthetic data in this budget.
+    extra_args:
+        Additional CLI flags appended after ``--models`` (e.g.
+        ``["--skip-benchmark"]``).
 
     Returns
     -------
@@ -55,7 +59,7 @@ def run_pipeline_subprocess(
     """
     env = os.environ.copy()
     env["UBENCH_ALLOW_CPU"] = "1"  # UB-23: explicit CPU opt-in for the gate
-    cmd = [sys.executable, str(_MAIN_PIPELINE), "--models"] + models
+    cmd = [sys.executable, str(_MAIN_PIPELINE), "--models"] + models + (extra_args or [])
     result = subprocess.run(
         cmd,
         env=env,

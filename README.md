@@ -265,7 +265,7 @@ data/
 2. **Auto-Discovery**: No dataset configurations are hardcoded.
 3. **Flexible Naming**: Accepts multiple annotation layouts automatically.
 4. **Unique ID Prefixing**: Namespaces sample keys by dataset source (e.g. `S1/R11104`) to prevent conflict during combined multi-dataset training.
-5. **Stratified Splitting**: Merged datasets are split stratifically to represent each source dataset equally in the training/validation subsets.
+5. **Leave-Subjects-Out Cross-Validation**: `GroupKFold(groups=dataset)` holds out **whole subject directories** per fold — no subject ever appears in both train and validation of the same fold (frames of one person are near-duplicates). When fewer subject datasets than `k_folds` are present, the fold count is automatically reduced to the subject count with a warning; fewer than 2 subjects is an error.
 
 ---
 
@@ -320,7 +320,7 @@ run.sh / run.bat
 When training, multiple dataset splits are merged:
 - **Sample IDs**: Prefixed (e.g., `S1/R11104`, `S2/R21001`).
 - **Data Loaders**: Multi-dataset loaders feed combined tensors to the models.
-- **Stratification**: Train/Val folds split samples proportionally per dataset.
+- **Splitting**: Leave-subjects-out CV — each fold's validation set is one or more whole subject datasets. Samples are *not* split proportionally per dataset.
 
 ---
 

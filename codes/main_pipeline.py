@@ -27,6 +27,7 @@ from codes.hardware_detector import detect_and_optimize, HardwareProfile
 from codes.unified_data import (
     Config, create_kfold_data_loaders, create_single_fold_loader,
     seed_everything, MultiDirectoryDataLoader, shutdown_data_loaders,
+    load_split_metadata, resolve_fold_count,
 )
 from codes.unified_training import UnifiedTrainer
 from codes.preprocess_data import preprocess_all_data
@@ -308,6 +309,14 @@ class Pipeline:
         try:
             # Ensure offline-preprocessed arrays exist (UB-01)
             self.ensure_preprocessed_data()
+
+            # Resolve the effective leave-subjects-out fold count once
+            # (UB-03): the training loop, benchmark loop and the loaders'
+            # GroupKFold must all agree on the same K.
+            metadata_df = load_split_metadata(self.config)
+            self.config.K_FOLDS = resolve_fold_count(
+                self.config.K_FOLDS, metadata_df['dataset']
+            )
 
             # Load shared annotation data (lightweight)
             self.load_shared_data()
