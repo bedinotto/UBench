@@ -20,7 +20,7 @@ UBench is a computer vision pipeline for **thermal facial region segmentation** 
 
 ## 2. Current state — READ FIRST
 
-**Smoke-level E2E is green** (as of T1.2; T1.3/T1.4 landed): on synthetic CPU data the pipeline preprocesses, trains all 3 models, and produces a 3-row `benchmark_comparison.csv`. Partial-corpus runs no longer crash: with fewer `S*` dirs than `k_folds` the fold count is reduced with a warning (leave-subjects-out CV; <2 subjects is an actionable error), verified end-to-end in `test_splits.py`. Smoke-green ≠ real-data-green: a full real-data run (10 subjects, K=5) is plausible but **unverified**, and UB-07 still masks per-model failures behind a SUCCESS banner. Remaining Phase-1 items: UB-08 (mask offset), UB-07 (swallowed failures), UB-06 (dead auto-resume), UB-13/14 (epochs flag, duplicate timestamps). Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
+**Smoke-level E2E is green** (as of T1.2; T1.3–T1.6 landed): on synthetic CPU data the pipeline preprocesses, trains all 3 models, and produces a 3-row `benchmark_comparison.csv`. Partial-corpus runs no longer crash: with fewer `S*` dirs than `k_folds` the fold count is reduced with a warning (leave-subjects-out CV; <2 subjects is an actionable error), verified end-to-end in `test_splits.py`. Border-adjacent bounding boxes no longer shift masks: the crop origin is clamped once in `crop_to_bbox`, which returns it, and the polygon offset consumes it (UB-08). Training failures are recorded and fatal: the SUCCESS banner requires zero recorded failures, failed runs exit non-zero with tracebacks in `error_log_*.txt`, and `--fail-fast` aborts on the first failure (UB-07). Smoke-green ≠ real-data-green: a full real-data run (10 subjects, K=5) is plausible but **unverified**. Remaining Phase-1 items: UB-06 (dead auto-resume), UB-13/14 (epochs flag, duplicate timestamps). Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
 
 **Prime directive:** *No task is "done" until its acceptance test passes in a real execution.* Reading code is not verification. If you cannot run something, say so explicitly and mark the task blocked.
 
@@ -46,14 +46,14 @@ PyTorch is **not** in `requirements/requirements.txt` — on GPU training boxes 
 ### 3.2 Entry points and flag forwarding
 
 ```bash
-./run.sh                                  # Linux/Mac   (⚠ per-model failures masked — UB-07)
+./run.sh                                  # Linux/Mac
 run.bat                                   # Windows
 ./run.sh --skip-extract --skip-setup --models unet --epochs 10
 ./run.sh --models transunet swin          # model choices: unet, transunet, swin
 ./run.sh --skip-benchmark
 ```
 
-`run.sh`/`run.bat` handle `--skip-extract` and `--skip-setup` themselves and forward everything else (`--models`, `--epochs`, `--skip-benchmark`) to `codes/main_pipeline.py`. When debugging a single stage, call the `codes/*.py` script directly instead of going through `run.sh`. Note `--epochs 100` passed explicitly is currently ignored (UB-13).
+`run.sh`/`run.bat` handle `--skip-extract` and `--skip-setup` themselves and forward everything else (`--models`, `--epochs`, `--skip-benchmark`, `--fail-fast`) to `codes/main_pipeline.py`. When debugging a single stage, call the `codes/*.py` script directly instead of going through `run.sh`. Note `--epochs 100` passed explicitly is currently ignored (UB-13).
 
 ### 3.3 Running stages directly
 
@@ -152,8 +152,8 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 | UB-04 | Blocker/Docs | `unified_data.py`, `README` | Split semantics contradict docs: leave-subjects-out in code vs stratified-per-dataset in README, whose example fold counts GroupKFold cannot produce. Fix the docs, not the split. | FIXED@73967c8 |
 | UB-05 | Blocker | `main_pipeline.py:121` + `hardware_detector.py` | Batch-size keys `{unet, transunet, swin}` vs lookup `swin_unet_plus_plus` → `.get(key, 8)` silently returns 8. OOM risk at the advertised 6 GB minimum; waste on large GPUs. | FIXED@cd3afa4 |
 | UB-06 | Major | `main_pipeline.py`, `unified_training.py` | Auto-resume dead across restarts: checkpoints under `outputs/<timestamp>/checkpoints`, new timestamp per invocation → `_find_latest_checkpoint()` scans empty dir. | OPEN |
-| UB-07 | Major | `main_pipeline.py` | Failures swallowed: per-model/fold `try/except` prints one line, continues; SUCCESS banner + exit 0 possible with zero trained models; `main()`'s error-log writer unreachable. | OPEN |
-| UB-08 | Major | `preprocess_data.py:66-67` vs `crop_to_bbox` | Polygon offset `bbox.min − 10` unclamped while crop origin is `max(0, …)` → masks shifted up to 10 px for border-adjacent faces. Silent label corruption. | OPEN |
+| UB-07 | Major | `main_pipeline.py` | Failures swallowed: per-model/fold `try/except` prints one line, continues; SUCCESS banner + exit 0 possible with zero trained models; `main()`'s error-log writer unreachable. | FIXED@74e1b43 |
+| UB-08 | Major | `preprocess_data.py:66-67` vs `crop_to_bbox` | Polygon offset `bbox.min − 10` unclamped while crop origin is `max(0, …)` → masks shifted up to 10 px for border-adjacent faces. Silent label corruption. | FIXED@cc890de |
 | UB-09 | Major | `unified_training.py:validate` | Per-epoch "inference time" without `torch.cuda.synchronize()` (measures launch, includes loss). Benchmark syncs correctly but discards no warm-up batches. | OPEN |
 | UB-10 | Major | `benchmark_models.py` | Peak-VRAM compared across models at different batch sizes (worsened by UB-05). | OPEN |
 | UB-11 | Major | `unified_training.py`, `benchmark_models.py` | Metric inconsistency: hard IoU vs *soft* Dice (softmax, incl. background, unweighted ragged batches); benchmark `avg_loss` CE-only vs training CE+Dice. | OPEN |
@@ -210,6 +210,7 @@ codes/tests/
 ├── test_filenames.py           # UB-02: train↔benchmark path round-trip
 ├── test_splits.py              # UB-03/04: fold-count guard, subject exclusivity
 ├── test_preprocess_offsets.py  # UB-08: border-bbox mask alignment
+├── test_failure_honesty.py     # UB-07: injected failure → exit 1, error log, --fail-fast
 ├── test_batch_size_keys.py     # UB-05: hard lookup, per-tier values
 ├── test_config.py              # UB-12: schema-validated single config
 ├── test_metrics.py             # UB-11: hard-Dice == manual computation
@@ -304,8 +305,8 @@ Strict order inside each phase; 0→1→2 sequential, 3 may interleave after 1. 
 - [x] **T1.2 (UB-02)** `codes/naming.py` → `checkpoint_path(output_dir, model_key, fold, kind)`; trainer and benchmark import it; benchmark receives `model_key` alongside display name. AC met: `test_filenames.py` green; smoke passes with all 3 models in the CSV; xfail marker removed.
 - [x] **T1.3 (UB-05)** Canonical registry keys in `hardware_detector`; replace `.get(k, 8)` with `[k]`. AC met: `test_batch_size_keys.py` green — simulated 6 GB tier yields `swin_unet_plus_plus=6`, <5.5 GB tier 3, per-tier key parity with the model registry enforced; smoke exercises the hard lookup on the CPU profile.
 - [x] **T1.4 (UB-03/04)** `effective_k = min(K, n_groups)` + warning; error if `<2`; README rewritten to leave-subjects-out; impossible example output deleted (verified already absent). AC met: `test_splits.py` green — 2–3 subjects → runs with reduced K + warning; 1 subject → clear actionable error; no subject in both train and val of any fold; end-to-end 3-subject pipeline run completes at effective K=3.
-- [ ] **T1.5 (UB-08)** Clamped origin computed once; `crop_to_bbox` returns `(img, origin)`; mask offset uses it. AC: `test_preprocess_offsets.py` — border-bbox mask centroid within 1 px of expectation.
-- [ ] **T1.6 (UB-07)** Failure registry + end-of-run summary; non-zero exit on any failure; `--fail-fast`; `Pipeline()` moved inside `main()`'s try. AC: injected failure → exit 1 + `error_log_*.txt`; smoke asserts rc==0 only when all models trained.
+- [x] **T1.5 (UB-08)** Clamped origin computed once; `crop_to_bbox` returns `(img, origin)`; mask offset uses it. AC met: `test_preprocess_offsets.py` — red on unfixed code (border-bbox centroid 28 px off: (89.5, 89.0) vs (61.5, 89.0)), green after; control bbox (min_x=10) aligned before and after.
+- [x] **T1.6 (UB-07)** Failure registry + end-of-run summary; non-zero exit on any failure; `--fail-fast`; `Pipeline()` moved inside `main()`'s try. AC met: `test_failure_honesty.py` — injected failure → exit 1 + failure summary naming model+fold + `error_log_*.txt`; `--fail-fast` aborts before fold 2; constructor crash reaches the error-log writer; smoke asserts rc==0 and no failure summary.
 - [ ] **T1.7 (UB-06)** `--resume <run_id>` reuses dirs/checkpoints; `outputs/latest` symlink. AC: kill after epoch 1 of 2, resume completes epoch 2, metric history length == 2.
 - [ ] **T1.8 (UB-13/14)** `--epochs default=None`; `run.sh` exports `UBENCH_RUN_ID`, Python reuses it. AC: one `logs/<ts>` per run; `--epochs 100` honored.
 
