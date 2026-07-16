@@ -8,8 +8,9 @@ naming authority (codes/naming.py, T1.2), and the benchmark CSV
 contains all three models.
 
 Scope note: green here means smoke-level E2E on synthetic CPU data.
-It does NOT cover real-data risks — UB-03 (GroupKFold crash when
-#datasets < K_FOLDS) and UB-07 (per-model failures masked) remain open.
+It does NOT cover real-data risks — UB-07 (per-model failures masked)
+remains open, so rc == 0 is necessary but not sufficient evidence.
+Partial-corpus fold reduction (UB-03) is covered by test_splits.py.
 
 The subprocess runs the REAL entry point (codes/main_pipeline.py) with
 UBENCH_ALLOW_CPU=1 so hardware detection succeeds on CPU-only machines

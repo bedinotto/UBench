@@ -20,7 +20,7 @@ UBench is a computer vision pipeline for **thermal facial region segmentation** 
 
 ## 2. Current state — READ FIRST
 
-**Smoke-level E2E is green** (as of T1.2): on synthetic CPU data the pipeline preprocesses, trains all 3 models, and produces a 3-row `benchmark_comparison.csv`. Smoke-green ≠ real-data-green: a full real-data run (10 subjects, K=5) is plausible but **unverified**; partial-corpus runs (fewer `S*` dirs than `k_folds`) still crash on UB-03; and UB-07 still masks per-model failures behind a SUCCESS banner. Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
+**Smoke-level E2E is green** (as of T1.2; T1.3/T1.4 landed): on synthetic CPU data the pipeline preprocesses, trains all 3 models, and produces a 3-row `benchmark_comparison.csv`. Partial-corpus runs no longer crash: with fewer `S*` dirs than `k_folds` the fold count is reduced with a warning (leave-subjects-out CV; <2 subjects is an actionable error), verified end-to-end in `test_splits.py`. Smoke-green ≠ real-data-green: a full real-data run (10 subjects, K=5) is plausible but **unverified**, and UB-07 still masks per-model failures behind a SUCCESS banner. Remaining Phase-1 items: UB-08 (mask offset), UB-07 (swallowed failures), UB-06 (dead auto-resume), UB-13/14 (epochs flag, duplicate timestamps). Every defect is catalogued in the ledger (§5) with verified locations; treat it as ground truth, do not re-litigate it, and do re-verify each item with a test as you fix it. Work proceeds in phases (§9): make it *run* → make the *numbers trustworthy* → make the *science credible* → enhance.
 
 **Prime directive:** *No task is "done" until its acceptance test passes in a real execution.* Reading code is not verification. If you cannot run something, say so explicitly and mark the task blocked.
 
@@ -46,7 +46,7 @@ PyTorch is **not** in `requirements/requirements.txt` — on GPU training boxes 
 ### 3.2 Entry points and flag forwarding
 
 ```bash
-./run.sh                                  # Linux/Mac   (⚠ crashes if #S* dirs < k_folds — UB-03; failures masked — UB-07)
+./run.sh                                  # Linux/Mac   (⚠ per-model failures masked — UB-07)
 run.bat                                   # Windows
 ./run.sh --skip-extract --skip-setup --models unet --epochs 10
 ./run.sh --models transunet swin          # model choices: unet, transunet, swin
@@ -116,7 +116,7 @@ run.sh / run.bat
 
 ### 4.3 Hardware auto-scaling
 
-`codes/hardware_detector.py:detect_and_optimize` profiles the GPU at pipeline start and picks per-model batch sizes, worker count, and AMP strategy (GTX-class cards and CPUs get AMP disabled; the 6 GB GTX 1660 Ti is the baseline tier). ⚠ UB-05: the profile keys are `{unet, transunet, swin}` but training looks up `swin_unet_plus_plus` and silently falls back to 8 — Swin's VRAM-aware value is ignored during training until T1.3. Do not disable mixed precision for memory-constrained GPUs.
+`codes/hardware_detector.py:detect_and_optimize` profiles the GPU at pipeline start and picks per-model batch sizes, worker count, and AMP strategy (GTX-class cards and CPUs get AMP disabled; the 6 GB GTX 1660 Ti is the baseline tier). Batch-size keys are the canonical registry names (`unet`, `transunet`, `swin_unet_plus_plus`) in every tier, consumed via hard `[key]` lookup; per-tier key parity with the model registry is test-enforced (`test_batch_size_keys.py`), so registering a new model forces a batch-size entry (UB-05 fixed, T1.3). Do not disable mixed precision for memory-constrained GPUs.
 
 ### 4.4 Multi-dataset discovery and ID namespacing
 
@@ -124,7 +124,7 @@ run.sh / run.bat
 
 ### 4.5 Splits — what the code actually does
 
-Splitting is `GroupKFold(groups=df['dataset'])`: **whole subject directories are held out per fold** (leave-subjects-out CV). This is the methodologically correct choice for face data (frames of one person are near-duplicates), but it is *not* the stratified per-dataset split older docs described, and it **crashes** whenever the number of `S*` directories is smaller than `k_folds` (default 5) — UB-03/04. Fold counts, guards, and a held-out test-subject set are handled in T1.4 and T2.4.
+Splitting is `GroupKFold(groups=df['dataset'])`: **whole subject directories are held out per fold** (leave-subjects-out CV). This is the methodologically correct choice for face data (frames of one person are near-duplicates), and it is *not* a stratified per-dataset split. `resolve_fold_count` (in `unified_data.py`, resolved once by the pipeline and by both loader factories) reduces `k_folds` to the subject count with a loud warning and raises an actionable error below 2 subjects (UB-03/04 fixed, T1.4). A held-out test-subject set arrives in T2.4.
 
 ### 4.6 Shared training loop, model-specific architectures
 
@@ -148,9 +148,9 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 |----|-----|----------|----------------------------|--------|
 | UB-01 | Blocker | `run.sh`, `main_pipeline.py` | `preprocess_data.py` is never invoked by any entry point; loaders require `data/processed/metadata.csv` → fresh clone fails 15/15 train attempts. README omits the step. | FIXED@03e6dbb |
 | UB-02 | Blocker | `benchmark_models.py:~443-452` vs `main_pipeline.py:train_model` | Filename contract mismatch: training saves `best_unet_fold_N_model.pth`, `best_swin_unet_plus_plus_fold_N_model.pth` (registry names); benchmark searches `best_u_net_…`/`best_swin_unetplusplus_…` (display names via `_safe_filename`). Only TransUNet matches → comparison silently contains 1 of 3 models. | FIXED@dd5fa8d |
-| UB-03 | Blocker | `unified_data.py:~427,~540` | `GroupKFold(n_splits=K_FOLDS)` with `groups=df['dataset']` raises `ValueError` whenever #datasets < K (default 5). | OPEN |
-| UB-04 | Blocker/Docs | `unified_data.py`, `README` | Split semantics contradict docs: leave-subjects-out in code vs stratified-per-dataset in README, whose example fold counts GroupKFold cannot produce. Fix the docs, not the split. | OPEN |
-| UB-05 | Blocker | `main_pipeline.py:121` + `hardware_detector.py` | Batch-size keys `{unet, transunet, swin}` vs lookup `swin_unet_plus_plus` → `.get(key, 8)` silently returns 8. OOM risk at the advertised 6 GB minimum; waste on large GPUs. | OPEN |
+| UB-03 | Blocker | `unified_data.py:~427,~540` | `GroupKFold(n_splits=K_FOLDS)` with `groups=df['dataset']` raises `ValueError` whenever #datasets < K (default 5). | FIXED@73967c8 |
+| UB-04 | Blocker/Docs | `unified_data.py`, `README` | Split semantics contradict docs: leave-subjects-out in code vs stratified-per-dataset in README, whose example fold counts GroupKFold cannot produce. Fix the docs, not the split. | FIXED@73967c8 |
+| UB-05 | Blocker | `main_pipeline.py:121` + `hardware_detector.py` | Batch-size keys `{unet, transunet, swin}` vs lookup `swin_unet_plus_plus` → `.get(key, 8)` silently returns 8. OOM risk at the advertised 6 GB minimum; waste on large GPUs. | FIXED@cd3afa4 |
 | UB-06 | Major | `main_pipeline.py`, `unified_training.py` | Auto-resume dead across restarts: checkpoints under `outputs/<timestamp>/checkpoints`, new timestamp per invocation → `_find_latest_checkpoint()` scans empty dir. | OPEN |
 | UB-07 | Major | `main_pipeline.py` | Failures swallowed: per-model/fold `try/except` prints one line, continues; SUCCESS banner + exit 0 possible with zero trained models; `main()`'s error-log writer unreachable. | OPEN |
 | UB-08 | Major | `preprocess_data.py:66-67` vs `crop_to_bbox` | Polygon offset `bbox.min − 10` unclamped while crop origin is `max(0, …)` → masks shifted up to 10 px for border-adjacent faces. Silent label corruption. | OPEN |
@@ -302,8 +302,8 @@ Strict order inside each phase; 0→1→2 sequential, 3 may interleave after 1. 
 
 - [x] **T1.1 (UB-01)** Pipeline invokes `preprocess_all_data()` when `metadata.csv` absent; `--force-preprocess`; README gains the step. AC met: smoke trains all 3 models × 2 folds to epoch 1 on the synthetic fixture; frontier advanced to UB-02.
 - [x] **T1.2 (UB-02)** `codes/naming.py` → `checkpoint_path(output_dir, model_key, fold, kind)`; trainer and benchmark import it; benchmark receives `model_key` alongside display name. AC met: `test_filenames.py` green; smoke passes with all 3 models in the CSV; xfail marker removed.
-- [ ] **T1.3 (UB-05)** Canonical registry keys in `hardware_detector`; replace `.get(k, 8)` with `[k]`. AC: `test_batch_size_keys.py`; simulated 6 GB profile logs swin batch 6.
-- [ ] **T1.4 (UB-03/04)** `effective_k = min(K, n_groups)` + warning; error if `<2`; README rewritten to leave-subjects-out; impossible example output deleted. AC: `test_splits.py` — 2–3 subjects → runs with reduced K + warning; 1 subject → clear actionable error; no subject in both train and val of any fold.
+- [x] **T1.3 (UB-05)** Canonical registry keys in `hardware_detector`; replace `.get(k, 8)` with `[k]`. AC met: `test_batch_size_keys.py` green — simulated 6 GB tier yields `swin_unet_plus_plus=6`, <5.5 GB tier 3, per-tier key parity with the model registry enforced; smoke exercises the hard lookup on the CPU profile.
+- [x] **T1.4 (UB-03/04)** `effective_k = min(K, n_groups)` + warning; error if `<2`; README rewritten to leave-subjects-out; impossible example output deleted (verified already absent). AC met: `test_splits.py` green — 2–3 subjects → runs with reduced K + warning; 1 subject → clear actionable error; no subject in both train and val of any fold; end-to-end 3-subject pipeline run completes at effective K=3.
 - [ ] **T1.5 (UB-08)** Clamped origin computed once; `crop_to_bbox` returns `(img, origin)`; mask offset uses it. AC: `test_preprocess_offsets.py` — border-bbox mask centroid within 1 px of expectation.
 - [ ] **T1.6 (UB-07)** Failure registry + end-of-run summary; non-zero exit on any failure; `--fail-fast`; `Pipeline()` moved inside `main()`'s try. AC: injected failure → exit 1 + `error_log_*.txt`; smoke asserts rc==0 only when all models trained.
 - [ ] **T1.7 (UB-06)** `--resume <run_id>` reuses dirs/checkpoints; `outputs/latest` symlink. AC: kill after epoch 1 of 2, resume completes epoch 2, metric history length == 2.
@@ -335,6 +335,8 @@ Strict order inside each phase; 0→1→2 sequential, 3 may interleave after 1. 
 ---
 
 ## 10. Verification Gates & Definition of Done
+
+**Session Entry Protocol:** every session begins by verifying the predecessor's claimed end-state from the working tree — run the tests it claims green, check the ledger rows it claims flipped, confirm the key files it claims exist — before any new work. A failed check halts the session: report the gap, do not build on the unverified base, and do not "quickly fix" it in passing. This exists because trusting reports over trees is how drift starts.
 
 **Per task:** its new test passes; full `pytest codes/tests -x -q` green; `ruff check codes/` clean; ledger row → `FIXED@<sha>`; docs updated if behavior changed; diff reviewed for scope creep (R3).
 
