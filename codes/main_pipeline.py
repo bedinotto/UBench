@@ -41,6 +41,18 @@ import codes.swin_unet_plus_plus
 import codes.benchmark_models as benchmark_models
 
 
+def apply_epochs_override(epochs: int | None) -> None:
+    """Export ``--epochs`` to the ``NUM_EPOCHS`` env var Config reads (UB-13).
+
+    Exported whenever the flag was given — including exactly 100, the value
+    the old ``if args.epochs != 100`` guard silently dropped.  ``None``
+    (flag absent) exports nothing, leaving ``codes/config.yaml`` (or a
+    pre-set ``NUM_EPOCHS``) as the authority.
+    """
+    if epochs is not None:
+        os.environ['NUM_EPOCHS'] = str(epochs)
+
+
 def write_error_log(text: str) -> Path:
     """Persist *text* to a timestamped error log and return its path.
 
@@ -87,9 +99,11 @@ class Pipeline:
         print("THERMAL FACE DETECTION - AUTOMATED TRAINING PIPELINE")
         print("="*80 + "\n")
 
-        # Resolve the run identity: --resume reuses an existing run's dirs so
-        # checkpoint discovery finds prior epochs (UB-06); otherwise mint a
-        # fresh timestamp.
+        # Resolve the run identity (precedence: --resume > UBENCH_RUN_ID >
+        # fresh timestamp): --resume reuses an existing run's dirs so
+        # checkpoint discovery finds prior epochs (UB-06); UBENCH_RUN_ID is
+        # exported by run.sh/run.bat so shell and Python share one run id
+        # and one logs/<ts> dir per invocation (UB-14).
         if resume is not None:
             resume_dir = Path("outputs") / resume
             if not resume_dir.is_dir():
@@ -103,6 +117,8 @@ class Pipeline:
                 )
             self.run_timestamp = resume
             print(f"♻️  Resuming previous run: {resume}")
+        elif os.environ.get("UBENCH_RUN_ID"):
+            self.run_timestamp = os.environ["UBENCH_RUN_ID"]
         else:
             self.run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.run_output_dir = Path("outputs") / self.run_timestamp
@@ -508,8 +524,8 @@ def main():
     parser.add_argument(
         '--epochs',
         type=int,
-        default=100,
-        help='Number of training epochs (default: 100)'
+        default=None,
+        help='Number of training epochs (default: value from codes/config.yaml)'
     )
     parser.add_argument(
         '--detect-anomaly',
@@ -541,10 +557,8 @@ def main():
         torch.autograd.set_detect_anomaly(True)
         print("⚠️  WARNING: PyTorch anomaly detection is enabled. This will heavily degrade training performance.")
 
-    # Update epoch count if specified
-    if args.epochs != 100:
-        # This will be used by Config class
-        os.environ['NUM_EPOCHS'] = str(args.epochs)
+    # Export --epochs to the env var Config reads, whenever given (UB-13)
+    apply_epochs_override(args.epochs)
 
     # ── Global error catcher ─────────────────────────────────────────────
     # Any unhandled exception — including a Pipeline constructor crash

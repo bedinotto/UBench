@@ -27,8 +27,11 @@ fi
 PYTHON_CMD="python3"
 echo -e "${GREEN}✓${NC} Python 3 found: $($PYTHON_CMD --version)"
 
-# Create a timestamp for this run
+# Create a timestamp for this run and share it with the Python pipeline so
+# shell and Python use ONE run id — one outputs/<ts> and one logs/<ts> per
+# invocation (UB-14). Precedence in Python: --resume > UBENCH_RUN_ID > fresh.
 RUN_TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+export UBENCH_RUN_ID="${RUN_TIMESTAMP}"
 RUN_LOG_DIR="logs/${RUN_TIMESTAMP}"
 mkdir -p "${RUN_LOG_DIR}"
 echo -e "${GREEN}✓${NC} Run ID: ${RUN_TIMESTAMP}"
@@ -73,8 +76,11 @@ run_pipeline() {
     echo "================================================================================"
     echo ""
     
-    # Pass all arguments to the pipeline, capture output with tee
-    $PYTHON_CMD codes/main_pipeline.py "$@" 2>&1 | tee -a "${RUN_LOG_DIR}/pipeline.log"
+    # Pass all arguments to the pipeline. Python's TeeLogger owns
+    # ${RUN_LOG_DIR}/pipeline.log (same dir now that the run id is shared);
+    # the shell captures its own view in console.log so two writers never
+    # share one file.
+    $PYTHON_CMD codes/main_pipeline.py "$@" 2>&1 | tee -a "${RUN_LOG_DIR}/console.log"
     
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo -e "${RED}ERROR: Pipeline failed!${NC}"
@@ -148,8 +154,10 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
     echo "  --skip-extract            Skip data extraction from ZIP files"
     echo "  --models MODEL [MODEL...] Train only specific models (unet, transunet, swin)"
     echo "  --skip-benchmark          Skip benchmarking after training"
-    echo "  --epochs N                Number of training epochs (default: 100)"
+    echo "  --epochs N                Number of training epochs (default: from codes/config.yaml)"
     echo "  --fail-fast               Abort on the first model/fold training failure"
+    echo "  --resume RUN_ID           Reuse outputs/<RUN_ID> and logs/<RUN_ID> and continue"
+    echo "                            from its checkpoints (overrides this script's run id)"
     echo "  --help, -h                Show this help message"
     echo ""
     echo "Examples:"

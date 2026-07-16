@@ -101,6 +101,10 @@ echo ======================================================================== >>
 REM Expose the log dir so Python scripts can write their own named log files
 set UBENCH_LOG_DIR=%RUN_LOG_DIR%
 
+REM Share this run id with the Python pipeline: one outputs/<ts> and one
+REM logs/<ts> per invocation (UB-14). Python precedence: --resume wins.
+set UBENCH_RUN_ID=%RUN_TIMESTAMP%
+
 REM Parse arguments
 set SKIP_SETUP=0
 set SKIP_EXTRACT=0
