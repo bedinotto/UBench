@@ -28,7 +28,7 @@ A comprehensive, production-ready, and fully automated computer vision pipeline 
 - **Timestamped Execution Tracking**: All outputs, weights, metric histories, and console logs are saved under timestamped subdirectories in `outputs/` and `logs/`.
 - **Fault Tolerance & Resilience**:
   - **Aggressive Checkpointing**: Model weights and optimizer states are saved at the end of every epoch.
-  - **Auto-Resume**: Automatically resume training from the last checkpoint if training was interrupted.
+  - **Resumable Runs**: `--resume <run_id>` reuses a previous run's `outputs/<run_id>` and `logs/<run_id>` directories and continues training from its epoch checkpoints, keeping the metric history intact. `outputs/latest` always points at the newest run.
   - **Global Error Catching**: Catches runtime errors (e.g. matrix mismatches or out-of-memory) and dumps them into a log file for troubleshooting.
 
 ---
@@ -335,6 +335,7 @@ Both `run.bat` and `run.sh` accept the following flags:
 | `--models <name> [<name>...]` | Train only specific models. Choices: `unet`, `transunet`, `swin`. |
 | `--skip-benchmark` | Skip the benchmarking step after training. |
 | `--epochs N` | Override `config.yaml` and train for `N` epochs. |
+| `--resume RUN_ID` | Reuse `outputs/<RUN_ID>` and `logs/<RUN_ID>` from a previous run and continue from its checkpoints. |
 | `-h`, `--help` | Show help. |
 
 **Examples:**
