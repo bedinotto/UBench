@@ -56,21 +56,13 @@ def preprocess_all_data():
             
             # Load raw
             thermal_img = data_loader.load_thermal_image(sample_id)
-            
-            # Bbox offset
-            offset_x = 0
-            offset_y = 0
-            if (data_loader.all_bboxes is not None and 
-                sample_id in data_loader.all_bboxes['ID'].values):
-                bbox = data_loader.all_bboxes[
-                    data_loader.all_bboxes['ID'] == sample_id
-                ].iloc[0]
-                offset_x = int(bbox['min_x']) - 10
-                offset_y = int(bbox['min_y']) - 10
-            
-            # Crop
-            thermal_img = data_loader.crop_to_bbox(thermal_img, sample_id)
-            
+
+            # Crop; the returned origin is the clamped top-left corner the
+            # crop actually used — the polygon offset must match it (UB-08)
+            thermal_img, (offset_x, offset_y) = data_loader.crop_to_bbox(
+                thermal_img, sample_id
+            )
+
             # Create mask
             mask = data_loader.create_segmentation_mask(
                 sample_id, thermal_img.shape, (offset_x, offset_y)

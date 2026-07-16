@@ -328,19 +328,28 @@ class MultiDirectoryDataLoader:
         raise FileNotFoundError(f"Thermal image not found for ID: {sample_id}")
     
     def crop_to_bbox(self, thermal_img: np.ndarray,
-                     sample_id: str, padding: int = 10) -> np.ndarray:
-        """Crop thermal image to bounding box region"""
+                     sample_id: str, padding: int = 10
+                     ) -> Tuple[np.ndarray, Tuple[int, int]]:
+        """Crop thermal image to bounding box region.
+
+        Returns:
+            ``(cropped_img, (origin_x, origin_y))`` where the origin is the
+            clamped top-left corner actually used for the crop.  Polygon
+            offsets must consume this returned origin: recomputing
+            ``bbox.min - padding`` without clamping shifts masks for
+            border-adjacent boxes (UB-08).
+        """
         if self.all_bboxes is None or sample_id not in self.all_bboxes['ID'].values:
-            return thermal_img
-        
+            return thermal_img, (0, 0)
+
         bbox = self.all_bboxes[self.all_bboxes['ID'] == sample_id].iloc[0]
-        
+
         min_x = max(0, int(bbox['min_x']) - padding)
         min_y = max(0, int(bbox['min_y']) - padding)
         max_x = min(thermal_img.shape[1], int(bbox['max_x']) + padding)
         max_y = min(thermal_img.shape[0], int(bbox['max_y']) + padding)
-        
-        return thermal_img[min_y:max_y, min_x:max_x]
+
+        return thermal_img[min_y:max_y, min_x:max_x], (min_x, min_y)
     
     def create_segmentation_mask(self, sample_id: str,
                                  img_shape: Tuple[int, int],
