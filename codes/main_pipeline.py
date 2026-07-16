@@ -60,7 +60,8 @@ class Pipeline:
     """Main training pipeline orchestrator"""
     
     def __init__(self, models_to_train=None, skip_benchmark=False,
-                 force_preprocess: bool = False, fail_fast: bool = False):
+                 force_preprocess: bool = False, fail_fast: bool = False,
+                 resume: str | None = None):
         """
         Initialize pipeline
 
@@ -72,22 +73,43 @@ class Pipeline:
                            metadata.csv already exists
             fail_fast: If True, abort the run on the first model/fold
                            training failure instead of continuing
+            resume: Run ID of a previous run whose ``outputs/<run_id>`` and
+                           ``logs/<run_id>`` directories are reused so the
+                           trainers pick up their epoch checkpoints (UB-06).
+                           None = start a fresh timestamped run.
         """
         self.models_to_train = models_to_train or ['unet', 'transunet', 'swin']
         self.skip_benchmark = skip_benchmark
         self.force_preprocess = force_preprocess
         self.fail_fast = fail_fast
-        
+
         print("\n" + "="*80)
         print("THERMAL FACE DETECTION - AUTOMATED TRAINING PIPELINE")
         print("="*80 + "\n")
-        
-        # Create timestamped run directories
-        self.run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Resolve the run identity: --resume reuses an existing run's dirs so
+        # checkpoint discovery finds prior epochs (UB-06); otherwise mint a
+        # fresh timestamp.
+        if resume is not None:
+            resume_dir = Path("outputs") / resume
+            if not resume_dir.is_dir():
+                available = sorted(
+                    p.name for p in Path("outputs").glob("*")
+                    if p.is_dir() and not p.is_symlink()
+                )
+                raise FileNotFoundError(
+                    f"--resume {resume!r}: run directory {resume_dir} does not "
+                    f"exist. Available run IDs under outputs/: {available or 'none'}"
+                )
+            self.run_timestamp = resume
+            print(f"♻️  Resuming previous run: {resume}")
+        else:
+            self.run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.run_output_dir = Path("outputs") / self.run_timestamp
         self.run_log_dir = Path("logs") / self.run_timestamp
         self.run_output_dir.mkdir(parents=True, exist_ok=True)
         self.run_log_dir.mkdir(parents=True, exist_ok=True)
+        self._update_latest_symlink()
 
         # ── Start full-run console logger ──────────────────────────────────
         # Expose log dir via env var so child scripts (setup, extract) can
@@ -129,7 +151,26 @@ class Pipeline:
         # Failure registry (UB-07): every caught per-model/fold exception is
         # recorded here; the SUCCESS banner and exit code depend on it.
         self.failures: list[dict] = []
-    
+
+    def _update_latest_symlink(self) -> None:
+        """Point ``outputs/latest`` at this run's output dir (UB-06).
+
+        The replacement is atomic (create-then-rename) so a concurrent
+        reader never sees a missing link.  Platforms or filesystems without
+        symlink support (e.g. Windows without developer mode) get a warning,
+        not a crash — the link is a convenience, not a load-bearing path.
+        """
+        latest = self.run_output_dir.parent / "latest"
+        tmp = self.run_output_dir.parent / ".latest.tmp"
+        try:
+            if tmp.is_symlink() or tmp.exists():
+                tmp.unlink()
+            # Relative target: the link stays valid if outputs/ is moved.
+            tmp.symlink_to(self.run_output_dir.name, target_is_directory=True)
+            tmp.replace(latest)
+        except OSError as exc:
+            print(f"⚠️  Could not update {latest} symlink: {exc}")
+
     def ensure_preprocessed_data(self):
         """Run offline preprocessing when its outputs are missing (UB-01, T1.1).
 
@@ -485,6 +526,13 @@ def main():
         action='store_true',
         help='Abort the run on the first model/fold training failure'
     )
+    parser.add_argument(
+        '--resume',
+        metavar='RUN_ID',
+        default=None,
+        help='Reuse outputs/<RUN_ID> and logs/<RUN_ID> from a previous run '
+             'and continue training from its epoch checkpoints'
+    )
 
     args = parser.parse_args()
 
@@ -508,7 +556,8 @@ def main():
             models_to_train=args.models,
             skip_benchmark=args.skip_benchmark,
             force_preprocess=args.force_preprocess,
-            fail_fast=args.fail_fast
+            fail_fast=args.fail_fast,
+            resume=args.resume
         )
         success = pipeline.run()
     except Exception as e:  # noqa: BLE001

@@ -524,15 +524,18 @@ class UnifiedTrainer:
                 pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
         avg_loss = total_loss / len(self.val_loader)
-        avg_inference_time = np.mean(inference_times)
-        
+        # Plain Python floats: numpy scalars in the metric history would be
+        # rejected by the checkpoint's torch.load(weights_only=True) (R8),
+        # killing resume (UB-06).
+        avg_inference_time = float(np.mean(inference_times))
+
         # Compute epoch-level metrics
         ious_per_class = self.val_iou_metric.compute()
         # Remove NaNs (classes not present in target) before computing mean
         valid_ious = ious_per_class[~torch.isnan(ious_per_class)]
         mean_iou = valid_ious.mean().item() if valid_ious.numel() > 0 else 0.0
-        
-        mean_dice = np.mean(all_dice_scores)
+
+        mean_dice = float(np.mean(all_dice_scores))
         
         return avg_loss, mean_iou, mean_dice, avg_inference_time
     
