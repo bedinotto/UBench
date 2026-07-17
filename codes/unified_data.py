@@ -72,6 +72,9 @@ class Config:
     NUM_EPOCHS = _cfg_dict.get("training", {}).get("num_epochs", 100)
     K_FOLDS = _cfg_dict.get("training", {}).get("k_folds", 5)
     RANDOM_SEED = _cfg_dict.get("training", {}).get("random_seed", 42)
+    # Subjects held out from all CV folds and evaluated as the TEST set (M1).
+    # Default empty (CV only); overridable via the TEST_SUBJECTS env var.
+    TEST_SUBJECTS = list(_cfg_dict.get("training", {}).get("test_subjects", []) or [])
     
     # Thermal conversion
     RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
@@ -110,6 +113,9 @@ class Config:
             self.NUM_EPOCHS = int(os.environ['NUM_EPOCHS'])
         if 'K_FOLDS' in os.environ:
             self.K_FOLDS = int(os.environ['K_FOLDS'])
+        if 'TEST_SUBJECTS' in os.environ:
+            raw = os.environ['TEST_SUBJECTS'].strip()
+            self.TEST_SUBJECTS = [s.strip() for s in raw.split(',') if s.strip()]
     
     def _validate_paths(self):
         """Validate required data paths exist"""
@@ -420,11 +426,12 @@ class ThermalFaceDataset(Dataset):
         return thermal_img, mask, sample_id
 
 
-def load_split_metadata(config: Config) -> pd.DataFrame:
-    """Read the processed metadata rows that feed the CV split.
+def _read_all_metadata(config: Config) -> pd.DataFrame:
+    """Read every processed metadata row (test subjects included).
 
     Applies the ``LIMIT_SAMPLES`` truncation here so that every consumer
-    (fold-count resolution, loader creation) sees the same rows.
+    (fold-count resolution, loader creation, held-out test set) sees the same
+    rows before any test-subject partitioning.
     """
     metadata_path = config.PROCESSED_DIR / "metadata.csv"
     if not metadata_path.exists():
@@ -436,6 +443,49 @@ def load_split_metadata(config: Config) -> pd.DataFrame:
     if 'LIMIT_SAMPLES' in os.environ:
         df = df.head(int(os.environ['LIMIT_SAMPLES']))
     return df
+
+
+def _resolve_test_subjects(config: Config, df: pd.DataFrame) -> list:
+    """Return the configured held-out test subjects, validated against the data.
+
+    Holding out a subject that is not present would silently reserve *nothing*
+    — exactly the failure M1 exists to prevent — so an unknown id is a hard
+    error (R4), not a silent no-op.
+    """
+    test_subjects = list(getattr(config, 'TEST_SUBJECTS', []) or [])
+    if not test_subjects:
+        return []
+    discovered = set(pd.unique(df['dataset']))
+    missing = [s for s in test_subjects if s not in discovered]
+    if missing:
+        raise ValueError(
+            f"Configured test_subjects {missing} are not present in the "
+            f"discovered data (subjects: {sorted(discovered)}). Holding out a "
+            f"nonexistent subject would reserve nothing (M1). Fix test_subjects "
+            f"in codes/config.yaml or the TEST_SUBJECTS env var."
+        )
+    return test_subjects
+
+
+def load_split_metadata(config: Config) -> pd.DataFrame:
+    """Read the metadata rows that feed the CV split (held-out test excluded).
+
+    Held-out ``test_subjects`` (M1) are removed here so that **every** CV
+    consumer — the fold-count guard and both loader factories — operates on the
+    same training pool and no fold can ever see a test subject.
+    """
+    df = _read_all_metadata(config)
+    test_subjects = _resolve_test_subjects(config, df)
+    if test_subjects:
+        df = df[~df['dataset'].isin(test_subjects)].reset_index(drop=True)
+    return df
+
+
+def load_test_metadata(config: Config) -> pd.DataFrame:
+    """Read exactly the held-out test-subject rows (empty when none configured)."""
+    df = _read_all_metadata(config)
+    test_subjects = _resolve_test_subjects(config, df)
+    return df[df['dataset'].isin(test_subjects)].reset_index(drop=True)
 
 
 def resolve_fold_count(requested_k: int, groups: pd.Series) -> int:
@@ -642,6 +692,34 @@ def create_single_fold_loader(config: Config, fold_idx: int, batch_size: int,
         'train_ids': train_df['sample_id'].tolist(),
         'val_ids': val_df['sample_id'].tolist(),
     }
+
+
+def create_test_loader(config: Config, batch_size: int, num_workers: int):
+    """Create a DataLoader over exactly the held-out test subjects (M1).
+
+    Returns ``None`` when no ``test_subjects`` are configured, so callers get a
+    CV-only run unchanged. The loader is evaluation-style (no augmentation, no
+    shuffle) — it is scored, never trained on.
+    """
+    test_df = load_test_metadata(config)
+    if test_df.empty:
+        return None
+
+    mp_context = 'spawn' if num_workers > 0 else None
+    pin_memory = torch.cuda.is_available()
+    persistent = num_workers > 0 and platform.system() != 'Windows'
+
+    test_dataset = ThermalFaceDataset(test_df, config, augment=False)
+    return DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        multiprocessing_context=mp_context,
+    )
+
 
 def shutdown_data_loaders(*loaders: DataLoader):
     """Explicitly shut down DataLoader worker processes and free OS resources.

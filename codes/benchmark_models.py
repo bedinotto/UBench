@@ -165,6 +165,36 @@ def _format_vram(mb: Optional[float]) -> str:
     return "n/a (CPU)" if mb is None else f"{mb:.2f} MB"
 
 
+def evaluate_accuracy(model: nn.Module, loader: DataLoader,
+                      num_classes: int, device) -> Dict:
+    """Accuracy of one model on one loader via the shared authority (UB-11/R5).
+
+    Returns the loss (CE+Dice, the training criterion) and hard macro mIoU/Dice
+    — no timing, no VRAM. Used to score each fold-model on the held-out TEST set
+    (M1); the same authority the CV pass uses, so CV and TEST numbers compare.
+    """
+    device = torch.device(device)
+    model.eval()
+    seg = SegmentationMetrics(num_classes, device=device)
+    criterion = CombinedLoss()
+    total_loss = 0.0
+    n_batches = 0
+    with torch.no_grad():
+        for images, masks, _ in loader:
+            images = images.to(device)
+            masks = masks.to(device)
+            outputs = model(images)
+            total_loss += criterion(outputs, masks).item()
+            seg.update(outputs, masks)
+            n_batches += 1
+    m = seg.compute()
+    return {
+        "avg_loss": total_loss / n_batches if n_batches else 0.0,
+        "mean_iou": m["mean_iou"],
+        "mean_dice": m["mean_dice"],
+    }
+
+
 class ModelBenchmark:
     """Comprehensive benchmark for model comparison"""
     
@@ -309,11 +339,13 @@ class ModelBenchmark:
             print("No results to compare")
             return
         
-        # Create comparison dataframe
+        # Create comparison dataframe. "mIoU"/"Dice Score" are the CV headline;
+        # TEST columns are added only when a held-out test set was scored (M1),
+        # so a CV-only run is unchanged (backward-compatible).
         comparison_data = []
         for model_name, results in results_dict.items():
             if results:
-                comparison_data.append({
+                row = {
                     "Model": model_name,
                     "mIoU": results["mean_iou"],
                     "Dice Score": results["mean_dice"],
@@ -325,8 +357,12 @@ class ModelBenchmark:
                     # becomes NaN so the column stays numeric for the CSV/plots.
                     _VRAM_COL: results["vram_probe_mb"]
                     if results["vram_probe_mb"] is not None else float("nan"),
-                })
-        
+                }
+                if results.get("test_mean_iou") is not None:
+                    row["mIoU (TEST)"] = results["test_mean_iou"]
+                    row["Dice (TEST)"] = results["test_mean_dice"]
+                comparison_data.append(row)
+
         df = pd.DataFrame(comparison_data)
         
         if df.empty:
@@ -502,11 +538,18 @@ class ModelBenchmark:
                     f.write(f"  VRAM @ batch={results.get('vram_probe_batch', MEMORY_PROBE_BATCH_SIZE)} "
                            f"(fixed, inference): {_format_vram(results.get('vram_probe_mb'))}\n\n")
                     
-                    f.write(f"Accuracy Metrics (hard, argmax, macro excl. absent classes — UB-11/M2):\n")
+                    f.write(f"Accuracy — CROSS-VALIDATION (hard, argmax, macro excl. absent; ± cross-fold — UB-11/M2):\n")
                     f.write(f"  mIoU (macro):     {results['mean_iou']:.4f} ± {results['std_iou']:.4f}\n")
                     f.write(f"  Dice (macro):     {results['mean_dice']:.4f} ± {results['std_dice']:.4f}\n")
                     f.write(f"  Loss (CE+Dice):   {results['avg_loss']:.4f}\n\n")
-                    
+
+                    if results.get('test_mean_iou') is not None:
+                        f.write(f"Accuracy — HELD-OUT TEST SUBJECTS "
+                               f"({results.get('test_n_folds')} fold-models scored; ± cross-fold — M1):\n")
+                        f.write(f"  mIoU (macro):     {results['test_mean_iou']:.4f} ± {results['test_std_iou']:.4f}\n")
+                        f.write(f"  Dice (macro):     {results['test_mean_dice']:.4f} ± {results['test_std_dice']:.4f}\n")
+                        f.write(f"  Loss (CE+Dice):   {results['test_avg_loss']:.4f}\n\n")
+
                     f.write(f"Speed Metrics (warm-up discarded, synced on CUDA — UB-09/M3):\n")
                     f.write(f"  Inference Time:   {results['mean_inference_time_ms']:.2f} ± "
                            f"{results['std_inference_time_ms']:.2f} ms/image\n")
@@ -549,7 +592,8 @@ class ModelBenchmark:
 def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
                  val_loaders_dict: Dict[str, List[DataLoader]] = None,
                  val_loader: DataLoader = None, *,
-                 model_keys: Dict[str, str]) -> pd.DataFrame:
+                 model_keys: Dict[str, str],
+                 test_loader: DataLoader = None) -> pd.DataFrame:
     """
     Run complete benchmark suite, aggregating metrics across all folds if multiple loaders are provided.
 
@@ -561,6 +605,11 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
         model_keys: Dict mapping display_name to registry key — checkpoint
             paths are derived from registry keys only (UB-02/R5); display
             names stay in logs, plots, and the CSV's Model column
+        test_loader: Optional held-out TEST-subject loader (M1). When provided,
+            every fold-model is *also* scored on it and the results are reported
+            as a TEST section (mean ± std across folds), parallel to CV. No model
+            is selected on the test set — it is held out, so there is nothing to
+            select on; this is the most honest default (M9).
 
     Returns:
         Comparison dataframe
@@ -570,6 +619,7 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
 
     for model_name, model in models_dict.items():
         fold_results = []
+        test_fold_results = []   # each fold-model scored on the held-out TEST set (M1)
         num_folds = config.K_FOLDS
         model_key = model_keys[model_name]  # hard lookup — a typo must raise (R4)
 
@@ -610,7 +660,15 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
             results = benchmark.benchmark_model(loaded_model, f"{model_name}_Fold_{fold_idx + 1}", fold_loader)
             if results:
                 fold_results.append(results)
-                
+
+            # Also score this fold-model on the held-out TEST subjects (M1) —
+            # same held-out set for every fold, evaluated, never selected on.
+            if test_loader is not None:
+                test_fold_results.append(
+                    evaluate_accuracy(loaded_model, test_loader,
+                                      config.NUM_CLASSES, config.DEVICE)
+                )
+
             # Clean up fold loader resources and GPU memory after this evaluation
             shutdown_data_loaders(fold_loader)
             if torch.cuda.is_available():
@@ -666,7 +724,19 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
             "class_iou_means": class_iou_means,
             "class_iou_stds": class_iou_stds,
         }
-        
+
+        # Held-out TEST metrics: each fold-model scored on the same test set,
+        # aggregated mean ± std across folds (M1). Absent when no test subjects.
+        if test_fold_results:
+            aggregated_results.update({
+                "test_mean_iou": float(np.mean([r["mean_iou"] for r in test_fold_results])),
+                "test_std_iou": float(np.std([r["mean_iou"] for r in test_fold_results])),
+                "test_mean_dice": float(np.mean([r["mean_dice"] for r in test_fold_results])),
+                "test_std_dice": float(np.std([r["mean_dice"] for r in test_fold_results])),
+                "test_avg_loss": float(np.mean([r["avg_loss"] for r in test_fold_results])),
+                "test_n_folds": len(test_fold_results),
+            })
+
         results_dict[model_name] = aggregated_results
         
         # Print aggregated results
@@ -674,8 +744,11 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
         print(f"Aggregated Cross-Fold Results for {model_name} ({len(fold_results)}/{num_folds} Folds):")
         print(f"==============================================================")
         print(f"  Model Params:    {aggregated_results['model_params']:,} ({aggregated_results['model_size_mb']:.2f} MB)")
-        print(f"  mIoU (hard,macro):  {aggregated_results['mean_iou']:.4f} ± {aggregated_results['std_iou']:.4f}  (± cross-fold)")
-        print(f"  Dice (hard,macro):  {aggregated_results['mean_dice']:.4f} ± {aggregated_results['std_dice']:.4f}  (± cross-fold)")
+        print(f"  CV   mIoU (hard,macro):  {aggregated_results['mean_iou']:.4f} ± {aggregated_results['std_iou']:.4f}  (± cross-fold)")
+        print(f"  CV   Dice (hard,macro):  {aggregated_results['mean_dice']:.4f} ± {aggregated_results['std_dice']:.4f}  (± cross-fold)")
+        if aggregated_results.get('test_mean_iou') is not None:
+            print(f"  TEST mIoU (hard,macro):  {aggregated_results['test_mean_iou']:.4f} ± {aggregated_results['test_std_iou']:.4f}  (held-out, ± cross-fold)")
+            print(f"  TEST Dice (hard,macro):  {aggregated_results['test_mean_dice']:.4f} ± {aggregated_results['test_std_dice']:.4f}  (held-out, ± cross-fold)")
         print(f"  Inference Time:  {aggregated_results['mean_inference_time_ms']:.2f} ± {aggregated_results['std_inference_time_ms']:.2f} ms")
         print(f"  FPS:             {aggregated_results['fps']:.2f}")
         print(f"  Loss (CE+Dice):  {aggregated_results['avg_loss']:.4f}")

@@ -26,8 +26,8 @@ from codes.logger import TeeLogger
 from codes.hardware_detector import detect_and_optimize, HardwareProfile
 from codes.unified_data import (
     Config, create_kfold_data_loaders, create_single_fold_loader,
-    seed_everything, MultiDirectoryDataLoader, shutdown_data_loaders,
-    load_split_metadata, resolve_fold_count,
+    create_test_loader, seed_everything, MultiDirectoryDataLoader,
+    shutdown_data_loaders, load_split_metadata, resolve_fold_count,
 )
 from codes.unified_training import UnifiedTrainer
 from codes.preprocess_data import preprocess_all_data
@@ -392,12 +392,28 @@ class Pipeline:
                 loaders_data = self._get_fold_loaders(model_key, fold_idx)
                 loaders.append(loaders_data['val_loader'])
             val_loaders_dict[display_name] = loaders
-            
+
+        # Held-out TEST loader (M1): one shared set, scored per fold-model.
+        # Batch size is irrelevant to accuracy (confusion-matrix metrics are
+        # batch-invariant); reuse a representative model's batch size.
+        num_workers = self.hardware_profile.num_workers
+        if 'NUM_WORKERS' in os.environ:
+            num_workers = int(os.environ['NUM_WORKERS'])
+        probe_key = model_keys[next(iter(models_dict))]
+        test_loader = create_test_loader(
+            self.config, self.hardware_profile.batch_sizes[probe_key], num_workers
+        )
+        if test_loader is not None:
+            print(f"Held-out TEST subjects {self.config.TEST_SUBJECTS}: "
+                  f"{len(test_loader.dataset)} samples scored per fold-model.")
+
         print(f"Aggregating benchmark results across all {self.config.K_FOLDS} folds.")
         comparison_df = benchmark_models.run_benchmark(
             models_dict, self.config, val_loaders_dict=val_loaders_dict,
-            model_keys=model_keys
+            model_keys=model_keys, test_loader=test_loader
         )
+        if test_loader is not None:
+            shutdown_data_loaders(test_loader)
         
         print("\n✅ Benchmark completed successfully")
         

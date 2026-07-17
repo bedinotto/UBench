@@ -101,6 +101,9 @@ def test_full_pipeline_smoke(synthetic_dataset, monkeypatch):
     monkeypatch.setenv("NUM_EPOCHS", "1")
     monkeypatch.setenv("K_FOLDS", "2")
     monkeypatch.setenv("NUM_WORKERS", "0")
+    # Reserve S5 as a held-out TEST subject (M1/T2.4): CV runs on S1–S4, S5 is
+    # scored separately.  Exercises the CV+TEST path end-to-end in one run.
+    monkeypatch.setenv("TEST_SUBJECTS", "S5")
 
     rc, output = run_pipeline_subprocess(models=["unet", "transunet", "swin"])
 
@@ -121,3 +124,10 @@ def test_full_pipeline_smoke(synthetic_dataset, monkeypatch):
     assert set(df["Model"]) == {"U-Net", "TransUNet", "Swin-UNet++"}, (
         f"Expected all 3 models in benchmark CSV, got: {set(df['Model'])}"
     )
+
+    # M1/T2.4: the held-out TEST set (S5) was scored — the CSV grew TEST columns
+    # and the run announced the held-out subjects.
+    assert "mIoU (TEST)" in df.columns and "Dice (TEST)" in df.columns, (
+        f"Expected held-out TEST columns; got columns: {list(df.columns)}"
+    )
+    assert "Held-out TEST subjects" in output
