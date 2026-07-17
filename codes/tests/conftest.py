@@ -8,15 +8,6 @@ seconds without Git-LFS data.  See CLAUDE.md §7.2 for the specification.
 
 from __future__ import annotations
 
-# Pre-existing ad-hoc debug scripts (module-level CUDA code, no pytest functions).
-# They are untracked locally and absent in CI (fresh clone), but excluding them
-# here prevents local collection failures.  Deletion is deferred to T2.6.
-# Paths are relative to this conftest.py's directory (codes/tests/).
-collect_ignore_glob = [
-    "test_unet_nan*.py",
-    "test_suite.py",
-]
-
 import json
 import os
 import random
