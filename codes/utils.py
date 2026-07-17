@@ -8,12 +8,16 @@ import cv2
 import numpy as np
 
 def normalize_thermal(thermal_img: np.ndarray) -> np.ndarray:
-    """Normalize thermal image to [0, 1] range using min-max scaling"""
+    """Normalize thermal image to [0, 1] range using min-max scaling.
+
+    A flat image (min == max) normalizes to all-zeros — returning the raw image
+    would leak out-of-[0, 1] magnitudes into preprocessing (UB-15).
+    """
     min_val = thermal_img.min()
     max_val = thermal_img.max()
     if max_val - min_val > 0:
         return (thermal_img - min_val) / (max_val - min_val)
-    return thermal_img
+    return np.zeros_like(thermal_img, dtype=np.float32)
 
 def preprocess_thermal_image(thermal_img: np.ndarray, target_size: tuple) -> np.ndarray:
     """

@@ -260,15 +260,6 @@ class Pipeline:
                   f"running offline preprocessing")
         preprocess_all_data()
 
-    def load_shared_data(self):
-        """Load annotations once (lightweight) — DataLoaders are created lazily."""
-        print("\nStep 4: Data Loading (annotations)")
-        print("-"*80)
-
-        # Load annotations from        # (Shared data loader discovery removed as we use offline preprocessed arrays)
-        self._shared_data_loader = None
-        print(f"\u2705 Annotations loaded (DataLoaders will be created per-fold)\n")
-
     def _get_fold_loaders(self, model_name: str, fold_idx: int):
         """Create DataLoaders for a single model + fold (lazy, on-demand).
 
@@ -485,9 +476,6 @@ class Pipeline:
                 self.config.K_FOLDS, metadata_df['dataset']
             )
 
-            # Load shared annotation data (lightweight)
-            self.load_shared_data()
-            
             # Train models
             self.train_all_models()
             

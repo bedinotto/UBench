@@ -16,7 +16,7 @@ import time
 import cv2
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 try:
     from codes.unified_data import Config
     from codes.naming import checkpoint_path, epoch_checkpoint_glob
@@ -25,7 +25,6 @@ except ImportError:
     from unified_data import Config
     from naming import checkpoint_path, epoch_checkpoint_glob
     from metrics import SegmentationMetrics
-import torchmetrics
 
 
 def _safe_filename(name: str) -> str:
@@ -106,26 +105,6 @@ class CombinedLoss(nn.Module):
             return self.ce_weight * ce + self.dice_weight * dice
 
 
-def calculate_iou(pred: torch.Tensor, target: torch.Tensor, num_classes: int) -> List[float]:
-    """Calculate IoU for each class (Legacy fallback, use torchmetrics where possible)"""
-    ious = []
-    pred = pred.view(-1)
-    target = target.view(-1)
-    
-    for cls in range(num_classes):
-        pred_inds = pred == cls
-        target_inds = target == cls
-        intersection = (pred_inds & target_inds).sum().float()
-        union = (pred_inds | target_inds).sum().float()
-        
-        if union == 0:
-            ious.append(float('nan'))
-        else:
-            ious.append((intersection / union).item())
-    
-    return ious
-
-
 class UnifiedTrainer:
     """
     Unified training pipeline for all models
@@ -185,7 +164,6 @@ class UnifiedTrainer:
         # hard IoU + hard Dice on argmax, macro excluding classes absent from
         # the target, background reported separately.  The benchmark uses the
         # same SegmentationMetrics so the two toolchains agree by construction.
-        self.train_iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=config.NUM_CLASSES).to(config.DEVICE)
         self.val_metrics = SegmentationMetrics(config.NUM_CLASSES, device=config.DEVICE)
 
         # Automatic Mixed Precision (AMP) — enabled on GPUs with reliable fp16
@@ -688,12 +666,17 @@ class ThermalFaceDetector:
         self.model.eval()
 
     def normalize_thermal(self, thermal_img: np.ndarray) -> np.ndarray:
-        """Normalize thermal image to [0, 1] range"""
+        """Normalize thermal image to [0, 1] range.
+
+        A flat image (min == max) normalizes to all-zeros, not the raw values —
+        returning the un-normalized image would leak out-of-range magnitudes
+        into a supposedly [0, 1] tensor (UB-15).
+        """
         min_val = thermal_img.min()
         max_val = thermal_img.max()
         if max_val - min_val > 0:
             return (thermal_img - min_val) / (max_val - min_val)
-        return thermal_img
+        return np.zeros_like(thermal_img, dtype=np.float32)
 
     def predict(self, thermal_image: np.ndarray):
         """
@@ -802,20 +785,28 @@ class ThermalFaceDetector:
                               regions: Dict[str, np.ndarray],
                               save_path: Optional[str] = None):
         """Visualize predicted regions"""
-        fig, axes = plt.subplots(2, 5, figsize=(20, 8))
-        axes = axes.flatten()
+        # Grid sized to fit the original + every region. The old 2x5 (10 axes)
+        # silently dropped the last of 11 panels (1 original + 10 regions) — UB-15.
+        n_panels = 1 + len(regions)
+        ncols = 4
+        nrows = math.ceil(n_panels / ncols)
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+        axes = np.asarray(axes).flatten()
 
         # Show original image
         axes[0].imshow(thermal_image, cmap='hot')
         axes[0].set_title('Original Thermal Image')
         axes[0].axis('off')
 
-        # Show each region
+        # Show each region (the grid now has room for all of them)
         for idx, (region_name, mask) in enumerate(regions.items(), 1):
-            if idx < len(axes):
-                axes[idx].imshow(mask, cmap='gray')
-                axes[idx].set_title(region_name, fontsize=8)
-                axes[idx].axis('off')
+            axes[idx].imshow(mask, cmap='gray')
+            axes[idx].set_title(region_name, fontsize=8)
+            axes[idx].axis('off')
+
+        # Hide any spare axes
+        for spare in range(n_panels, len(axes)):
+            axes[spare].axis('off')
 
         plt.tight_layout()
         if save_path:
