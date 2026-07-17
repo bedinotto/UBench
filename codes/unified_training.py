@@ -207,7 +207,6 @@ class UnifiedTrainer:
         self.val_losses = []
         self.val_ious = []
         self.val_dice_scores = []
-        self.inference_times = []
         self.best_val_loss = float('inf')
         self.best_val_iou = 0.0
 
@@ -322,7 +321,6 @@ class UnifiedTrainer:
             'val_losses': self.val_losses,
             'val_ious': self.val_ious,
             'val_dice_scores': self.val_dice_scores,
-            'inference_times': self.inference_times,
             # ── best-so-far trackers ──────────────────────────────────
             'best_val_loss': self.best_val_loss,
             'best_val_iou': self.best_val_iou,
@@ -373,7 +371,9 @@ class UnifiedTrainer:
         self.val_losses        = checkpoint.get('val_losses', [])
         self.val_ious          = checkpoint.get('val_ious', [])
         self.val_dice_scores   = checkpoint.get('val_dice_scores', [])
-        self.inference_times   = checkpoint.get('inference_times', [])
+        # 'inference_times' (present in pre-UB-09 checkpoints) is intentionally
+        # ignored — torch.load still reads the whole dict, so old checkpoints
+        # load fine; the key is simply no longer restored (T2.1).
         self.best_val_loss     = checkpoint.get('best_val_loss', float('inf'))
         self.best_val_iou      = checkpoint.get('best_val_iou', 0.0)
 
@@ -477,29 +477,31 @@ class UnifiedTrainer:
             return float('nan')
         return total_loss / valid_batches
     
-    def validate(self) -> Tuple[float, float, float, float]:
+    def validate(self) -> Tuple[float, float, float]:
         """
-        Validate the model with comprehensive metrics
-        
+        Validate the model with comprehensive metrics.
+
         Returns:
-            avg_loss, mean_iou, mean_dice, avg_inference_time
+            avg_loss, mean_iou, mean_dice
+
+        Per-epoch inference timing was removed (UB-09, T2.1): it was measured
+        without ``torch.cuda.synchronize()`` — on GPU that captures kernel
+        *launch* time, not compute — and the timed span also included the loss.
+        Trustworthy latency is measured once in the benchmark via
+        ``benchmark_models.timed_inference`` with warm-up discard (M3).
         """
         self.model.eval()
         total_loss = 0
         all_dice_scores = []
-        inference_times = []
-        
+
         self.val_iou_metric.reset()
-        
+
         pbar = tqdm(self.val_loader, desc=f"Validating {self.model_name}")
         with torch.no_grad():
             for images, masks, _ in pbar:
                 images = images.to(self.config.DEVICE, non_blocking=True)
                 masks = masks.to(self.config.DEVICE, non_blocking=True)
-                
-                # Measure inference time
-                start_time = time.time()
-                
+
                 if self.scaler is not None:
                     with torch.amp.autocast('cuda'):
                         outputs = self.model(images)
@@ -507,27 +509,20 @@ class UnifiedTrainer:
                 else:
                     outputs = self.model(images)
                     loss = self.criterion(outputs, masks)
-                    
-                inference_time = (time.time() - start_time) * 1000 / images.size(0)
-                inference_times.append(inference_time)
-                
+
                 total_loss += loss.item()
-                
+
                 # Calculate Metrics using torchmetrics
                 preds = torch.argmax(outputs, dim=1)
                 self.val_iou_metric.update(preds, masks)
-                
+
                 # Calculate Dice score
                 dice = calculate_dice_score(outputs, masks, self.config.NUM_CLASSES)
                 all_dice_scores.append(dice)
-                
+
                 pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-        
+
         avg_loss = total_loss / len(self.val_loader)
-        # Plain Python floats: numpy scalars in the metric history would be
-        # rejected by the checkpoint's torch.load(weights_only=True) (R8),
-        # killing resume (UB-06).
-        avg_inference_time = float(np.mean(inference_times))
 
         # Compute epoch-level metrics
         ious_per_class = self.val_iou_metric.compute()
@@ -536,8 +531,8 @@ class UnifiedTrainer:
         mean_iou = valid_ious.mean().item() if valid_ious.numel() > 0 else 0.0
 
         mean_dice = float(np.mean(all_dice_scores))
-        
-        return avg_loss, mean_iou, mean_dice, avg_inference_time
+
+        return avg_loss, mean_iou, mean_dice
     
     def train(self):
         """Full training loop with per-epoch checkpointing and auto-resume."""
@@ -569,11 +564,10 @@ class UnifiedTrainer:
             self.train_losses.append(train_loss)
 
             # Validate
-            val_loss, val_iou, val_dice, inference_time = self.validate()
+            val_loss, val_iou, val_dice = self.validate()
             self.val_losses.append(val_loss)
             self.val_ious.append(val_iou)
             self.val_dice_scores.append(val_dice)
-            self.inference_times.append(inference_time)
 
             # Print metrics
             print(f"\nMetrics:")
@@ -581,7 +575,6 @@ class UnifiedTrainer:
             print(f"  Val Loss:       {val_loss:.4f}")
             print(f"  Val mIoU:       {val_iou:.4f}")
             print(f"  Val Dice:       {val_dice:.4f}")
-            print(f"  Inference Time: {inference_time:.2f} ms/image")
 
             # Learning rate scheduling
             self.scheduler.step(val_loss)
@@ -651,15 +644,12 @@ class UnifiedTrainer:
         axes[1, 0].set_title('Validation Dice Score', fontsize=14, fontweight='bold')
         axes[1, 0].grid(True, alpha=0.3)
         
-        # Inference Time
-        axes[1, 1].plot(self.inference_times, label='Inference Time', color='orange', linewidth=2)
-        axes[1, 1].set_xlabel('Epoch', fontsize=12)
-        axes[1, 1].set_ylabel('Time (ms)', fontsize=12)
-        axes[1, 1].legend(fontsize=10)
-        axes[1, 1].set_title('Inference Time per Image', fontsize=14, fontweight='bold')
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        plt.suptitle(f'{self.model_name} Training History', 
+        # Per-epoch inference timing was removed (UB-09, T2.1) — it was an
+        # unsynced, loss-polluted measurement.  The 4th panel is left blank;
+        # trustworthy latency lives in the benchmark report.
+        axes[1, 1].axis('off')
+
+        plt.suptitle(f'{self.model_name} Training History',
                     fontsize=16, fontweight='bold', y=0.995)
         plt.tight_layout()
         
@@ -689,12 +679,10 @@ class UnifiedTrainer:
             "final_val_loss": self.val_losses[-1] if self.val_losses else None,
             "final_val_iou": self.val_ious[-1] if self.val_ious else None,
             "final_val_dice": self.val_dice_scores[-1] if self.val_dice_scores else None,
-            "avg_inference_time_ms": np.mean(self.inference_times) if self.inference_times else None,
             "train_losses": self.train_losses,
             "val_losses": self.val_losses,
             "val_ious": self.val_ious,
             "val_dice_scores": self.val_dice_scores,
-            "inference_times": self.inference_times
         }
         
         save_path = save_dir / f"{_safe_filename(self.model_name)}_metrics.json"

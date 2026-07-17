@@ -28,6 +28,83 @@ except ImportError:
 import torchmetrics
 
 
+def timed_inference(model: nn.Module, val_loader, device, warmup: int = 5) -> Dict:
+    """Measure per-image inference latency honestly (UB-09, M3).
+
+    Two correctness properties the old in-loop timing lacked:
+
+    * **Synchronization** — ``torch.cuda.synchronize()`` is called immediately
+      before and after each timed forward pass **iff** ``device`` is CUDA.
+      Without it, ``time.time()`` on GPU captures kernel *launch* time, not
+      compute.  On CPU the calls are skipped (nothing to synchronize).
+    * **Warm-up discard** — the first
+      ``n_warmup = min(warmup, max(0, n_batches - 1))`` batches are run but not
+      timed, so one-time cuDNN autotune / allocator cost does not pollute the
+      mean.  The ``max(0, n_batches - 1)`` guard keeps at least one *measured*
+      batch even for the tiny (<6-batch) validation loaders in the smoke suite.
+
+    Only the forward pass is timed — the loss is not computed here (it belongs
+    to the metrics pass), so latency reflects inference alone.
+
+    Args:
+        model: model to benchmark (moved to ``eval`` mode here).
+        val_loader: iterable of ``(images, masks, _)`` batches with a ``len()``.
+        device: ``torch.device`` or str; decides whether to synchronize.
+        warmup: desired number of warm-up batches to discard.
+
+    Returns:
+        Dict with per-image latency and the measurement conditions (M9)::
+
+            {"mean_inference_time_ms", "std_inference_time_ms", "fps",
+             "n_warmup", "n_measured", "batch_size", "dtype", "device"}
+    """
+    device = torch.device(device)
+    use_sync = device.type == "cuda"
+
+    n_batches = len(val_loader)
+    n_warmup = min(warmup, max(0, n_batches - 1))
+
+    per_image_ms: List[float] = []
+    batch_size = None
+    dtype = None
+
+    model.eval()
+    with torch.no_grad():
+        for i, batch in enumerate(val_loader):
+            images = batch[0]
+            images = images.to(device, non_blocking=True)
+            if batch_size is None:
+                batch_size = int(images.size(0))
+                dtype = str(getattr(images, "dtype", "unknown"))
+
+            if i < n_warmup:
+                model(images)          # warm-up: executed but not recorded
+                continue
+
+            if use_sync:
+                torch.cuda.synchronize()
+            start = time.time()
+            model(images)
+            if use_sync:
+                torch.cuda.synchronize()
+            per_image_ms.append((time.time() - start) * 1000.0 / images.size(0))
+
+    n_measured = len(per_image_ms)
+    mean_ms = float(np.mean(per_image_ms)) if n_measured else 0.0
+    std_ms = float(np.std(per_image_ms)) if n_measured else 0.0
+    fps = 1000.0 / mean_ms if mean_ms > 0 else 0.0
+
+    return {
+        "mean_inference_time_ms": mean_ms,
+        "std_inference_time_ms": std_ms,
+        "fps": fps,
+        "n_warmup": n_warmup,
+        "n_measured": n_measured,
+        "batch_size": batch_size,
+        "dtype": dtype,
+        "device": str(device),
+    }
+
 
 class ModelBenchmark:
     """Comprehensive benchmark for model comparison"""
@@ -68,47 +145,40 @@ class ModelBenchmark:
         
         # Metrics containers
         all_dice_scores = []
-        inference_times = []
-        
+
         # Initialize torchmetrics
         iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=self.config.NUM_CLASSES, average='none').to(self.config.DEVICE)
-        
+
         # Loss function
         criterion = nn.CrossEntropyLoss()
         total_loss = 0
-        
-        # GPU memory tracking
+
+        # GPU memory tracking (peak reflects this metrics pass)
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.empty_cache()
-        
+
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f"Testing {model_name}")
             for images, masks, _ in pbar:
                 images = images.to(self.config.DEVICE)
                 masks = masks.to(self.config.DEVICE)
-                
-                # Measure inference time (per image)
-                torch.cuda.synchronize() if torch.cuda.is_available() else None
-                start_time = time.time()
+
                 outputs = model(images)
-                torch.cuda.synchronize() if torch.cuda.is_available() else None
-                inference_time = (time.time() - start_time) * 1000 / images.size(0)
-                inference_times.append(inference_time)
-                
+
                 # Calculate loss
                 loss = criterion(outputs, masks)
                 total_loss += loss.item()
-                
+
                 # Update torchmetrics
                 preds = torch.argmax(outputs, dim=1)
                 iou_metric.update(preds, masks)
-                
+
                 # Calculate Dice score
                 from codes.unified_training import calculate_dice_score
                 dice = calculate_dice_score(outputs, masks, self.config.NUM_CLASSES)
                 all_dice_scores.append(dice)
-        
+
         # Calculate statistics
         avg_loss = total_loss / len(val_loader)
         
@@ -121,11 +191,7 @@ class ModelBenchmark:
         
         mean_dice = np.mean(all_dice_scores)
         std_dice = np.std(all_dice_scores)
-        
-        mean_inference_time = np.mean(inference_times)
-        std_inference_time = np.std(inference_times)
-        fps = 1000.0 / mean_inference_time
-        
+
         # Model size
         model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         model_size_mb = model_params * 4 / (1024 ** 2)  # Assuming float32
@@ -134,7 +200,16 @@ class ModelBenchmark:
         peak_memory_mb = 0
         if torch.cuda.is_available():
             peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
-        
+
+        # ── Latency: a separate warm-up-discarded, correctly-synced pass so the
+        # measurement is polluted neither by first-batch cost nor by the
+        # loss/metrics work above (UB-09/M3).  Peak memory has already been read,
+        # so this second pass does not inflate it.
+        timing = timed_inference(model, val_loader, self.config.DEVICE)
+        mean_inference_time = timing["mean_inference_time_ms"]
+        std_inference_time = timing["std_inference_time_ms"]
+        fps = timing["fps"]
+
         # Per-class IoU statistics
         class_iou_means = ious_per_class.cpu().numpy().tolist()
         class_iou_stds = [0.0] * self.config.NUM_CLASSES # Without batch-level info, we can't compute variance here easily
@@ -151,17 +226,25 @@ class ModelBenchmark:
             "mean_inference_time_ms": mean_inference_time,
             "std_inference_time_ms": std_inference_time,
             "fps": fps,
+            # Timing conditions (M9) — attached so the report can disclose them.
+            "timing_n_warmup": timing["n_warmup"],
+            "timing_n_measured": timing["n_measured"],
+            "timing_batch_size": timing["batch_size"],
+            "timing_dtype": timing["dtype"],
+            "timing_device": timing["device"],
             "peak_memory_mb": peak_memory_mb,
             "class_iou_means": class_iou_means,
             "class_iou_stds": class_iou_stds,
         }
-        
+
         # Print results
         print(f"\nResults:")
         print(f"  Model Params:    {model_params:,} ({model_size_mb:.2f} MB)")
         print(f"  Mean IoU:        {mean_iou:.4f} ± {std_iou:.4f}")
         print(f"  Mean Dice:       {mean_dice:.4f} ± {std_dice:.4f}")
-        print(f"  Inference Time:  {mean_inference_time:.2f} ± {std_inference_time:.2f} ms")
+        print(f"  Inference Time:  {mean_inference_time:.2f} ± {std_inference_time:.2f} ms/image "
+              f"(warm-up={timing['n_warmup']}, measured={timing['n_measured']} batches, "
+              f"batch={timing['batch_size']}, {timing['dtype']}, {timing['device']})")
         print(f"  FPS:             {fps:.2f}")
         print(f"  Avg Loss:        {avg_loss:.4f}")
         if torch.cuda.is_available():
@@ -361,10 +444,16 @@ class ModelBenchmark:
                     f.write(f"  Mean Dice:        {results['mean_dice']:.4f} ± {results['std_dice']:.4f}\n")
                     f.write(f"  Avg Loss:         {results['avg_loss']:.4f}\n\n")
                     
-                    f.write(f"Speed Metrics:\n")
+                    f.write(f"Speed Metrics (warm-up discarded, synced on CUDA — UB-09/M3):\n")
                     f.write(f"  Inference Time:   {results['mean_inference_time_ms']:.2f} ± "
-                           f"{results['std_inference_time_ms']:.2f} ms\n")
-                    f.write(f"  Throughput (FPS): {results['fps']:.2f}\n\n")
+                           f"{results['std_inference_time_ms']:.2f} ms/image\n")
+                    f.write(f"  Throughput (FPS): {results['fps']:.2f}\n")
+                    f.write(f"  Conditions:       warm-up={results.get('timing_n_warmup')}, "
+                           f"measured={results.get('timing_n_measured')} batches, "
+                           f"batch_size={results.get('timing_batch_size')}, "
+                           f"dtype={results.get('timing_dtype')}, "
+                           f"device={results.get('timing_device')}, "
+                           f"torch={torch.__version__}\n\n")
                     
                     f.write(f"Per-Class IoU:\n")
                     for idx, (region_name, iou_mean, iou_std) in enumerate(
@@ -500,6 +589,13 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
             "mean_inference_time_ms": float(mean_inference_time),
             "std_inference_time_ms": float(std_inference_time),
             "fps": float(fps),
+            # Timing conditions are constant across folds (same device/dtype and
+            # warm-up policy) — carry a representative fold's values (M9).
+            "timing_n_warmup": fold_results[0].get("timing_n_warmup"),
+            "timing_n_measured": fold_results[0].get("timing_n_measured"),
+            "timing_batch_size": fold_results[0].get("timing_batch_size"),
+            "timing_dtype": fold_results[0].get("timing_dtype"),
+            "timing_device": fold_results[0].get("timing_device"),
             "peak_memory_mb": float(peak_memory_mb),
             "class_iou_means": class_iou_means,
             "class_iou_stds": class_iou_stds,
