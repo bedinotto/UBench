@@ -20,9 +20,11 @@ from typing import Dict, List, Optional, Tuple
 try:
     from codes.unified_data import Config
     from codes.naming import checkpoint_path, epoch_checkpoint_glob
+    from codes.metrics import SegmentationMetrics
 except ImportError:
     from unified_data import Config
     from naming import checkpoint_path, epoch_checkpoint_glob
+    from metrics import SegmentationMetrics
 import torchmetrics
 
 
@@ -124,18 +126,6 @@ def calculate_iou(pred: torch.Tensor, target: torch.Tensor, num_classes: int) ->
     return ious
 
 
-def calculate_dice_score(pred: torch.Tensor, target: torch.Tensor, num_classes: int) -> float:
-    """Calculate Dice score (Legacy fallback, use torchmetrics where possible)"""
-    pred = F.softmax(pred, dim=1)
-    target_one_hot = F.one_hot(target, num_classes).permute(0, 3, 1, 2).float()
-    
-    intersection = (pred * target_one_hot).sum(dim=(2, 3))
-    union = pred.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3))
-    
-    dice = (2. * intersection + 1e-7) / (union + 1e-7)
-    return dice.mean().item()
-
-
 class UnifiedTrainer:
     """
     Unified training pipeline for all models
@@ -191,9 +181,12 @@ class UnifiedTrainer:
             self.optimizer, mode='min', patience=5, factor=0.5
         )
         
-        # Initialize torchmetrics
+        # Validation metrics go through the single shared authority (UB-11/R5):
+        # hard IoU + hard Dice on argmax, macro excluding classes absent from
+        # the target, background reported separately.  The benchmark uses the
+        # same SegmentationMetrics so the two toolchains agree by construction.
         self.train_iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=config.NUM_CLASSES).to(config.DEVICE)
-        self.val_iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=config.NUM_CLASSES, average='none').to(config.DEVICE)
+        self.val_metrics = SegmentationMetrics(config.NUM_CLASSES, device=config.DEVICE)
 
         # Automatic Mixed Precision (AMP) — enabled on GPUs with reliable fp16
         # Tensor Core support (RTX 20xx / 30xx / 40xx, A-series, etc.).
@@ -492,9 +485,8 @@ class UnifiedTrainer:
         """
         self.model.eval()
         total_loss = 0
-        all_dice_scores = []
 
-        self.val_iou_metric.reset()
+        self.val_metrics.reset()
 
         pbar = tqdm(self.val_loader, desc=f"Validating {self.model_name}")
         with torch.no_grad():
@@ -511,26 +503,17 @@ class UnifiedTrainer:
                     loss = self.criterion(outputs, masks)
 
                 total_loss += loss.item()
-
-                # Calculate Metrics using torchmetrics
-                preds = torch.argmax(outputs, dim=1)
-                self.val_iou_metric.update(preds, masks)
-
-                # Calculate Dice score
-                dice = calculate_dice_score(outputs, masks, self.config.NUM_CLASSES)
-                all_dice_scores.append(dice)
+                self.val_metrics.update(outputs, masks)   # argmax taken inside
 
                 pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
         avg_loss = total_loss / len(self.val_loader)
 
-        # Compute epoch-level metrics
-        ious_per_class = self.val_iou_metric.compute()
-        # Remove NaNs (classes not present in target) before computing mean
-        valid_ious = ious_per_class[~torch.isnan(ious_per_class)]
-        mean_iou = valid_ious.mean().item() if valid_ious.numel() > 0 else 0.0
-
-        mean_dice = float(np.mean(all_dice_scores))
+        # Hard IoU / Dice from the single shared authority: macro over classes
+        # present in the target, background excluded (UB-11/M2).
+        seg = self.val_metrics.compute()
+        mean_iou = seg["mean_iou"]
+        mean_dice = seg["mean_dice"]
 
         return avg_loss, mean_iou, mean_dice
     

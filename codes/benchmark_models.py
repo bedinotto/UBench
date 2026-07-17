@@ -19,13 +19,14 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 try:
     from codes.unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
-    from codes.unified_training import _safe_filename
+    from codes.unified_training import _safe_filename, CombinedLoss
     from codes.naming import checkpoint_path
+    from codes.metrics import SegmentationMetrics
 except ImportError:
     from unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
-    from unified_training import _safe_filename
+    from unified_training import _safe_filename, CombinedLoss
     from naming import checkpoint_path
-import torchmetrics
+    from metrics import SegmentationMetrics
 
 
 def timed_inference(model: nn.Module, val_loader, device, warmup: int = 5) -> Dict:
@@ -143,14 +144,15 @@ class ModelBenchmark:
         
         model.eval()
         
-        # Metrics containers
-        all_dice_scores = []
+        # Metrics via the single shared authority (UB-11/R5): hard IoU + hard
+        # Dice on argmax, macro over classes present in the target, background
+        # reported separately — identical definitions to the trainer.
+        seg_metrics = SegmentationMetrics(self.config.NUM_CLASSES, device=self.config.DEVICE)
 
-        # Initialize torchmetrics
-        iou_metric = torchmetrics.JaccardIndex(task='multiclass', num_classes=self.config.NUM_CLASSES, average='none').to(self.config.DEVICE)
-
-        # Loss function
-        criterion = nn.CrossEntropyLoss()
+        # Loss = the training criterion (CE + Dice) from the shared CombinedLoss
+        # class, so "loss" means the same thing here as during training (was a
+        # benchmark-only CrossEntropyLoss — UB-11).
+        criterion = CombinedLoss()
         total_loss = 0
 
         # GPU memory tracking (peak reflects this metrics pass)
@@ -166,31 +168,26 @@ class ModelBenchmark:
 
                 outputs = model(images)
 
-                # Calculate loss
+                # Loss (CE + Dice — the training criterion)
                 loss = criterion(outputs, masks)
                 total_loss += loss.item()
 
-                # Update torchmetrics
-                preds = torch.argmax(outputs, dim=1)
-                iou_metric.update(preds, masks)
-
-                # Calculate Dice score
-                from codes.unified_training import calculate_dice_score
-                dice = calculate_dice_score(outputs, masks, self.config.NUM_CLASSES)
-                all_dice_scores.append(dice)
+                # Accumulate hard IoU / Dice (argmax taken inside)
+                seg_metrics.update(outputs, masks)
 
         # Calculate statistics
         avg_loss = total_loss / len(val_loader)
-        
-        ious_per_class = iou_metric.compute()
-        valid_ious = ious_per_class[~torch.isnan(ious_per_class)]
-        mean_iou = valid_ious.mean().item() if valid_ious.numel() > 0 else 0.0
-        # For std_iou across batches, we used to do it across batches. With torchmetrics we can't get variance across batches easily without keeping track.
-        # We'll just set it to 0 as it's not strictly necessary, or compute std across classes
-        std_iou = valid_ious.std().item() if valid_ious.numel() > 1 else 0.0
-        
-        mean_dice = np.mean(all_dice_scores)
-        std_dice = np.std(all_dice_scores)
+
+        seg = seg_metrics.compute()
+        mean_iou = seg["mean_iou"]
+        mean_dice = seg["mean_dice"]
+        # Dispersion across the present, non-background classes (a within-model
+        # spread; cross-fold variance is computed separately in run_benchmark).
+        present_fg = [c for c in seg["present_classes"] if c != 0]
+        iou_fg = [seg["per_class_iou"][c] for c in present_fg]
+        dice_fg = [seg["per_class_dice"][c] for c in present_fg]
+        std_iou = float(np.std(iou_fg)) if len(iou_fg) > 1 else 0.0
+        std_dice = float(np.std(dice_fg)) if len(dice_fg) > 1 else 0.0
 
         # Model size
         model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -210,8 +207,9 @@ class ModelBenchmark:
         std_inference_time = timing["std_inference_time_ms"]
         fps = timing["fps"]
 
-        # Per-class IoU statistics
-        class_iou_means = ious_per_class.cpu().numpy().tolist()
+        # Per-class IoU statistics (from the shared authority; NaN for classes
+        # absent from both prediction and target)
+        class_iou_means = seg["per_class_iou"]
         class_iou_stds = [0.0] * self.config.NUM_CLASSES # Without batch-level info, we can't compute variance here easily
         
         results = {
@@ -240,13 +238,13 @@ class ModelBenchmark:
         # Print results
         print(f"\nResults:")
         print(f"  Model Params:    {model_params:,} ({model_size_mb:.2f} MB)")
-        print(f"  Mean IoU:        {mean_iou:.4f} ± {std_iou:.4f}")
-        print(f"  Mean Dice:       {mean_dice:.4f} ± {std_dice:.4f}")
+        print(f"  mIoU (hard,macro):  {mean_iou:.4f} ± {std_iou:.4f}")
+        print(f"  Dice (hard,macro):  {mean_dice:.4f} ± {std_dice:.4f}")
         print(f"  Inference Time:  {mean_inference_time:.2f} ± {std_inference_time:.2f} ms/image "
               f"(warm-up={timing['n_warmup']}, measured={timing['n_measured']} batches, "
               f"batch={timing['batch_size']}, {timing['dtype']}, {timing['device']})")
         print(f"  FPS:             {fps:.2f}")
-        print(f"  Avg Loss:        {avg_loss:.4f}")
+        print(f"  Loss (CE+Dice):  {avg_loss:.4f}")
         if torch.cuda.is_available():
             print(f"  Peak GPU Memory: {peak_memory_mb:.2f} MB")
         print(f"{'='*70}")
@@ -439,10 +437,10 @@ class ModelBenchmark:
                     f.write(f"  Model Size:       {results['model_size_mb']:.2f} MB\n")
                     f.write(f"  Peak GPU Memory:  {results['peak_memory_mb']:.2f} MB\n\n")
                     
-                    f.write(f"Accuracy Metrics:\n")
-                    f.write(f"  Mean IoU:         {results['mean_iou']:.4f} ± {results['std_iou']:.4f}\n")
-                    f.write(f"  Mean Dice:        {results['mean_dice']:.4f} ± {results['std_dice']:.4f}\n")
-                    f.write(f"  Avg Loss:         {results['avg_loss']:.4f}\n\n")
+                    f.write(f"Accuracy Metrics (hard, argmax, macro excl. absent classes — UB-11/M2):\n")
+                    f.write(f"  mIoU (macro):     {results['mean_iou']:.4f} ± {results['std_iou']:.4f}\n")
+                    f.write(f"  Dice (macro):     {results['mean_dice']:.4f} ± {results['std_dice']:.4f}\n")
+                    f.write(f"  Loss (CE+Dice):   {results['avg_loss']:.4f}\n\n")
                     
                     f.write(f"Speed Metrics (warm-up discarded, synced on CUDA — UB-09/M3):\n")
                     f.write(f"  Inference Time:   {results['mean_inference_time_ms']:.2f} ± "
@@ -608,11 +606,11 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
         print(f"Aggregated Cross-Fold Results for {model_name} ({len(fold_results)}/{num_folds} Folds):")
         print(f"==============================================================")
         print(f"  Model Params:    {aggregated_results['model_params']:,} ({aggregated_results['model_size_mb']:.2f} MB)")
-        print(f"  Mean IoU:        {aggregated_results['mean_iou']:.4f} ± {aggregated_results['std_iou']:.4f}")
-        print(f"  Mean Dice:       {aggregated_results['mean_dice']:.4f} ± {aggregated_results['std_dice']:.4f}")
+        print(f"  mIoU (hard,macro):  {aggregated_results['mean_iou']:.4f} ± {aggregated_results['std_iou']:.4f}  (± cross-fold)")
+        print(f"  Dice (hard,macro):  {aggregated_results['mean_dice']:.4f} ± {aggregated_results['std_dice']:.4f}  (± cross-fold)")
         print(f"  Inference Time:  {aggregated_results['mean_inference_time_ms']:.2f} ± {aggregated_results['std_inference_time_ms']:.2f} ms")
         print(f"  FPS:             {aggregated_results['fps']:.2f}")
-        print(f"  Avg Loss:        {aggregated_results['avg_loss']:.4f}")
+        print(f"  Loss (CE+Dice):  {aggregated_results['avg_loss']:.4f}")
         if torch.cuda.is_available():
             print(f"  Peak GPU Memory: {aggregated_results['peak_memory_mb']:.2f} MB")
         print(f"==============================================================\n")
