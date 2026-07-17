@@ -15,6 +15,12 @@ training:
   num_epochs: 100
   k_folds: 5
   random_seed: 42
+  # Reproducibility (M6). When true (default), seed_everything is the single
+  # owner of cuDNN flags: cudnn.deterministic=True, cudnn.benchmark=False. When
+  # false, cudnn.benchmark=True is allowed for speed (non-reproducible). This
+  # replaces the old contradiction (hardware_detector set benchmark=True while
+  # seed_everything set it False). Overridable via UBENCH_DETERMINISTIC=0/1.
+  deterministic: true
   # Subjects (S* directory names) held out from ALL CV folds and evaluated
   # separately as the TEST set (M1). Default empty = no held-out test set (CV
   # only), which is backward-compatible. A real/citable run should reserve 1-2

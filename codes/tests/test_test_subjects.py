@@ -46,6 +46,7 @@ def _cfg(tmp_path, subjects, test_subjects=(), k_folds: int = 2):
         TEST_SUBJECTS=list(test_subjects),
         K_FOLDS=k_folds,
         NUM_CLASSES=10,
+        RANDOM_SEED=42,   # loaders build a seeded generator from this (T2.5)
     )
 
 

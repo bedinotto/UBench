@@ -31,20 +31,46 @@ def _raw_to_celsius(raw):
     return (raw / 100) - 273.15
 
 
-def seed_everything(seed: int = 42):
-    """Set global seeds for reproducibility."""
+def seed_everything(seed: int = 42, deterministic: bool = True):
+    """Set global seeds and own the cuDNN determinism decision (M6).
+
+    This is the **single owner** of the cuDNN flags (UB-20a): the previous code
+    had ``hardware_detector`` set ``cudnn.benchmark = True`` while this function
+    set it ``False`` — a contradiction whose outcome depended on call order.
+
+    Args:
+        seed: base seed for python ``random``, numpy, and torch (CPU + CUDA).
+        deterministic: when True (default), request reproducible cuDNN
+            (``cudnn.deterministic = True``, ``cudnn.benchmark = False``); when
+            False, allow ``cudnn.benchmark = True`` for speed (non-reproducible).
+            ``torch.use_deterministic_algorithms`` is deliberately **not** called
+            — it raises on ops without deterministic kernels and would
+            destabilise the pipeline. This branch is GPU-only; on CPU the cuDNN
+            flags are inert.
+    """
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # NOTE: cudnn.deterministic is intentionally NOT set here.
-    # The hardware_detector enables cudnn.benchmark=True for speed,
-    # and the two flags are mutually exclusive.  Reproducibility is
-    # ensured via fixed seeds above; deterministic mode would only
-    # add overhead without benefit.
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
+
+
+def seed_worker(worker_id: int):
+    """DataLoader ``worker_init_fn``: seed numpy and python ``random`` per worker.
+
+    Without this, spawned workers start with unseeded numpy/``random`` state, so
+    albumentations augmentations are non-reproducible across runs (UB-20a/M6).
+    The seed derives from torch's per-worker base seed (set deterministically
+    from the DataLoader's seeded ``generator``) plus ``worker_id``, so it is
+    reproducible across runs with the same ``RANDOM_SEED`` yet distinct per
+    worker.
+    """
+    worker_seed = (torch.initial_seed() + worker_id) % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 class Config:
@@ -72,6 +98,9 @@ class Config:
     NUM_EPOCHS = _cfg_dict.get("training", {}).get("num_epochs", 100)
     K_FOLDS = _cfg_dict.get("training", {}).get("k_folds", 5)
     RANDOM_SEED = _cfg_dict.get("training", {}).get("random_seed", 42)
+    # Reproducibility flag (M6): the single owner of the cuDNN determinism/
+    # benchmark decision. Overridable via UBENCH_DETERMINISTIC.
+    DETERMINISTIC = bool(_cfg_dict.get("training", {}).get("deterministic", True))
     # Subjects held out from all CV folds and evaluated as the TEST set (M1).
     # Default empty (CV only); overridable via the TEST_SUBJECTS env var.
     TEST_SUBJECTS = list(_cfg_dict.get("training", {}).get("test_subjects", []) or [])
@@ -116,6 +145,8 @@ class Config:
         if 'TEST_SUBJECTS' in os.environ:
             raw = os.environ['TEST_SUBJECTS'].strip()
             self.TEST_SUBJECTS = [s.strip() for s in raw.split(',') if s.strip()]
+        if 'UBENCH_DETERMINISTIC' in os.environ:
+            self.DETERMINISTIC = os.environ['UBENCH_DETERMINISTIC'].strip() not in ('0', 'false', 'False', '')
     
     def _validate_paths(self):
         """Validate required data paths exist"""
@@ -588,6 +619,8 @@ def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
             pin_memory=pin_memory,
             persistent_workers=persistent,
             multiprocessing_context=mp_context,
+            generator=torch.Generator().manual_seed(config.RANDOM_SEED),
+            worker_init_fn=seed_worker,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -597,8 +630,10 @@ def create_kfold_data_loaders(config: Config, batch_size: int, num_workers: int,
             pin_memory=pin_memory,
             persistent_workers=persistent,
             multiprocessing_context=mp_context,
+            generator=torch.Generator().manual_seed(config.RANDOM_SEED),
+            worker_init_fn=seed_worker,
         )
-        
+
         folds_data.append({
             'train_loader': train_loader,
             'val_loader': val_loader,
@@ -675,6 +710,8 @@ def create_single_fold_loader(config: Config, fold_idx: int, batch_size: int,
         pin_memory=pin_memory,
         persistent_workers=persistent,
         multiprocessing_context=mp_context,
+        generator=torch.Generator().manual_seed(config.RANDOM_SEED),
+        worker_init_fn=seed_worker,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -684,6 +721,8 @@ def create_single_fold_loader(config: Config, fold_idx: int, batch_size: int,
         pin_memory=pin_memory,
         persistent_workers=persistent,
         multiprocessing_context=mp_context,
+        generator=torch.Generator().manual_seed(config.RANDOM_SEED),
+        worker_init_fn=seed_worker,
     )
 
     return {
@@ -718,6 +757,8 @@ def create_test_loader(config: Config, batch_size: int, num_workers: int):
         pin_memory=pin_memory,
         persistent_workers=persistent,
         multiprocessing_context=mp_context,
+        generator=torch.Generator().manual_seed(config.RANDOM_SEED),
+        worker_init_fn=seed_worker,
     )
 
 

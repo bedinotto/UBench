@@ -347,10 +347,9 @@ def detect_and_optimize(log_dir: str = "logs") -> 'HardwareProfile':
             os.environ[key] = value
             print(f"Set {key}={value}")
 
-    # Enable cuDNN benchmark for faster convolutions (since input sizes are constant)
-    if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
-        print("Enabled torch.backends.cudnn.benchmark=True for faster training")
+    # cuDNN determinism/benchmark is owned solely by seed_everything, driven by
+    # the `deterministic` config flag (UB-20a/M6). Setting it here too would
+    # reintroduce the previous contradiction, so it is intentionally not touched.
 
     # Save profile using pathlib (cross-platform)
     log_path = Path(log_dir)

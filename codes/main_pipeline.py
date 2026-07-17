@@ -7,6 +7,8 @@ Manages the complete training and benchmarking pipeline
 import sys
 import os
 import gc
+import json
+import subprocess
 import traceback
 import multiprocessing
 import torch
@@ -39,6 +41,46 @@ import codes.unet_v2
 import codes.transunet
 import codes.swin_unet_plus_plus
 import codes.benchmark_models as benchmark_models
+
+
+def _git(args: list[str], default: str = "unknown") -> str:
+    """Best-effort ``git`` invocation for run provenance; never raises."""
+    try:
+        out = subprocess.run(
+            ["git", *args], capture_output=True, text=True,
+            cwd=str(Path(__file__).parent), timeout=5,
+        )
+        return (out.stdout or "").strip() or default
+    except Exception:
+        return default
+
+
+def collect_run_metadata(config, run_id: str, models_to_train: list[str]) -> dict:
+    """Collect per-run provenance (M6): git state, env, seed, and effective config.
+
+    Pure function (no I/O beyond a best-effort ``git`` read) so it is unit
+    testable. ``Pipeline`` writes the result to ``logs/<run_id>/run_metadata.json``.
+    """
+    cuda = torch.cuda.is_available()
+    return {
+        "run_id": run_id,
+        "git_sha": _git(["rev-parse", "HEAD"]),
+        "git_dirty": bool(_git(["status", "--porcelain"], default="")),
+        "torch_version": torch.__version__,
+        "cuda_available": cuda,
+        "cuda_version": torch.version.cuda,
+        "gpu_name": torch.cuda.get_device_name(0) if cuda else None,
+        "random_seed": config.RANDOM_SEED,
+        "deterministic": config.DETERMINISTIC,
+        "models_to_train": list(models_to_train),
+        "num_epochs": config.NUM_EPOCHS,
+        "k_folds": config.K_FOLDS,
+        "test_subjects": list(config.TEST_SUBJECTS),
+        "image_size": list(config.IMAGE_SIZE),
+        "num_classes": config.NUM_CLASSES,
+        # TODO(T3.5): record the resolved lockfile hash once lockfiles land (UB-20b).
+        "lockfile_hash": None,
+    }
 
 
 def apply_epochs_override(epochs: int | None) -> None:
@@ -157,9 +199,19 @@ class Pipeline:
         print("✅ Configuration validated")
         print("✅ Data directories verified")
         
-        # Set global seed
-        seed_everything(self.config.RANDOM_SEED)
-        print(f"✅ Global seeds fixed to {self.config.RANDOM_SEED}")
+        # Set global seed + own the cuDNN determinism decision (M6)
+        seed_everything(self.config.RANDOM_SEED, deterministic=self.config.DETERMINISTIC)
+        print(f"✅ Global seeds fixed to {self.config.RANDOM_SEED} "
+              f"(deterministic={self.config.DETERMINISTIC})")
+
+        # Per-run provenance (M6): git SHA/dirty, torch/CUDA, GPU, seed, config
+        metadata = collect_run_metadata(
+            self.config, self.run_timestamp, self.models_to_train
+        )
+        metadata_path = self.run_log_dir / "run_metadata.json"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        print(f"✅ Run metadata written to: {metadata_path}")
         
         # Store training results (metrics only — models are saved to disk)
         self.training_results = {}
