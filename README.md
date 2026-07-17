@@ -266,6 +266,7 @@ data/
 3. **Flexible Naming**: Accepts multiple annotation layouts automatically.
 4. **Unique ID Prefixing**: Namespaces sample keys by dataset source (e.g. `S1/R11104`) to prevent conflict during combined multi-dataset training.
 5. **Leave-Subjects-Out Cross-Validation**: `GroupKFold(groups=dataset)` holds out **whole subject directories** per fold — no subject ever appears in both train and validation of the same fold (frames of one person are near-duplicates). When fewer subject datasets than `k_folds` are present, the fold count is automatically reduced to the subject count with a warning; fewer than 2 subjects is an error.
+6. **Held-Out Test Subjects** *(opt-in)*: set `training.test_subjects` in `codes/config.yaml` (or the `TEST_SUBJECTS` env var, comma-separated) to reserve whole subjects that are excluded from **all** CV folds and scored separately. Each fold-model is evaluated on the held-out set and the benchmark report gains a **CV** and a **TEST** section (mean ± std). The default is empty (CV only). A test subject absent from the data, or a holdout leaving fewer than 2 CV subjects, is a hard error.
 
 ---
 

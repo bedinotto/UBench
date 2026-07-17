@@ -15,6 +15,15 @@ evidence, and record any deviation as a new ledger row.
 > mIoU / Dice / loss are now on the single hard-metric authority (UB-11, done)
 > and are comparable across the trainer and the benchmark.
 
+> **Held-out test subjects (M1).** A real or citable run **must** set
+> `training.test_subjects` in `codes/config.yaml` (or the `TEST_SUBJECTS` env
+> var) — reserve 1–2 subjects (e.g. `["S9", "S10"]`) held out from all CV folds
+> and scored separately. With the shipped default (empty) there is **no TEST
+> section**: the report is CV-only, which is fine for a smoke but not for a
+> headline result. Test subjects are still preprocessed; they are only filtered
+> out of the CV pool. A holdout that leaves fewer than 2 CV subjects, or names a
+> subject not in the data, is a hard error.
+
 ---
 
 ## 0. Preconditions
