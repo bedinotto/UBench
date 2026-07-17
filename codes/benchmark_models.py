@@ -16,7 +16,7 @@ from tqdm import tqdm
 import time
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 try:
     from codes.unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
     from codes.unified_training import _safe_filename, CombinedLoss
@@ -107,6 +107,64 @@ def timed_inference(model: nn.Module, val_loader, device, warmup: int = 5) -> Di
     }
 
 
+# Fixed batch size for the VRAM probe — the SAME for every model so peak memory
+# is comparable (UB-10, M3). Changing this changes the reported column label.
+MEMORY_PROBE_BATCH_SIZE = 4
+
+# The one memory column in the comparison table/report (M9).
+_VRAM_COL = f"VRAM @ batch={MEMORY_PROBE_BATCH_SIZE} (fixed, inference)"
+
+
+def probe_peak_memory(model: nn.Module, device, image_size,
+                      in_channels: int = 1,
+                      batch_size: int = MEMORY_PROBE_BATCH_SIZE) -> Optional[float]:
+    """Peak GPU memory (MB) for one inference forward on a FIXED synthetic batch.
+
+    Comparability fix (UB-10, M3): the old code read peak VRAM *during each
+    model's evaluation pass*, at that model's hardware-selected batch size, so
+    the figures were not comparable across models. This probe instead runs a
+    single forward on a synthetic ``(batch_size, in_channels, H, W)`` tensor —
+    the same shape for every model, independent of the loader or the model's
+    training batch — so the number reflects the model, deterministically.
+
+    Inference-mode and isolated: ``model.eval()`` + ``torch.no_grad()`` (the
+    same mode as :func:`timed_inference`), ``reset_peak_memory_stats()``
+    immediately before the single forward and ``max_memory_allocated()``
+    immediately after. Run this as its own step so it neither perturbs nor is
+    perturbed by the timing / metrics passes.
+
+    Args:
+        model: model to probe (put into eval mode here).
+        device: ``torch.device`` or str.
+        image_size: ``(H, W)`` for the synthetic input (e.g. ``config.IMAGE_SIZE``).
+        in_channels: input channels (1 for thermal).
+        batch_size: fixed probe batch size (shared across models).
+
+    Returns:
+        Peak allocated MB on CUDA, or ``None`` on CPU — there is nothing to
+        measure without a GPU, and reporting 0 would fabricate a number (R10).
+        Callers render ``None`` as "n/a (CPU)".
+    """
+    device = torch.device(device)
+    if device.type != "cuda":
+        return None
+
+    h, w = int(image_size[0]), int(image_size[1])
+    probe_input = torch.zeros((batch_size, in_channels, h, w), device=device)
+
+    model.eval()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+    with torch.no_grad():
+        model(probe_input)
+    return torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+
+
+def _format_vram(mb: Optional[float]) -> str:
+    """Render a VRAM figure, or 'n/a (CPU)' when it was not measured."""
+    return "n/a (CPU)" if mb is None else f"{mb:.2f} MB"
+
+
 class ModelBenchmark:
     """Comprehensive benchmark for model comparison"""
     
@@ -155,11 +213,6 @@ class ModelBenchmark:
         criterion = CombinedLoss()
         total_loss = 0
 
-        # GPU memory tracking (peak reflects this metrics pass)
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
-            torch.cuda.empty_cache()
-
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f"Testing {model_name}")
             for images, masks, _ in pbar:
@@ -192,16 +245,15 @@ class ModelBenchmark:
         # Model size
         model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         model_size_mb = model_params * 4 / (1024 ** 2)  # Assuming float32
-        
-        # GPU memory
-        peak_memory_mb = 0
-        if torch.cuda.is_available():
-            peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
+        # ── VRAM: an isolated probe at a FIXED batch size shared by every model,
+        # so peak memory is comparable (UB-10/M3).  Returns None on CPU.
+        vram_probe_mb = probe_peak_memory(model, self.config.DEVICE,
+                                          self.config.IMAGE_SIZE)
 
         # ── Latency: a separate warm-up-discarded, correctly-synced pass so the
         # measurement is polluted neither by first-batch cost nor by the
-        # loss/metrics work above (UB-09/M3).  Peak memory has already been read,
-        # so this second pass does not inflate it.
+        # loss/metrics work above (UB-09/M3).
         timing = timed_inference(model, val_loader, self.config.DEVICE)
         mean_inference_time = timing["mean_inference_time_ms"]
         std_inference_time = timing["std_inference_time_ms"]
@@ -230,7 +282,8 @@ class ModelBenchmark:
             "timing_batch_size": timing["batch_size"],
             "timing_dtype": timing["dtype"],
             "timing_device": timing["device"],
-            "peak_memory_mb": peak_memory_mb,
+            "vram_probe_mb": vram_probe_mb,
+            "vram_probe_batch": MEMORY_PROBE_BATCH_SIZE,
             "class_iou_means": class_iou_means,
             "class_iou_stds": class_iou_stds,
         }
@@ -245,8 +298,7 @@ class ModelBenchmark:
               f"batch={timing['batch_size']}, {timing['dtype']}, {timing['device']})")
         print(f"  FPS:             {fps:.2f}")
         print(f"  Loss (CE+Dice):  {avg_loss:.4f}")
-        if torch.cuda.is_available():
-            print(f"  Peak GPU Memory: {peak_memory_mb:.2f} MB")
+        print(f"  VRAM @ batch={MEMORY_PROBE_BATCH_SIZE} (fixed): {_format_vram(vram_probe_mb)}")
         print(f"{'='*70}")
         
         return results
@@ -269,7 +321,10 @@ class ModelBenchmark:
                     "FPS": results["fps"],
                     "Params (M)": results["model_params"] / 1e6,
                     "Size (MB)": results["model_size_mb"],
-                    "GPU Mem (MB)": results["peak_memory_mb"],
+                    # One comparable memory column (fixed-batch probe). None (CPU)
+                    # becomes NaN so the column stays numeric for the CSV/plots.
+                    _VRAM_COL: results["vram_probe_mb"]
+                    if results["vram_probe_mb"] is not None else float("nan"),
                 })
         
         df = pd.DataFrame(comparison_data)
@@ -360,12 +415,18 @@ class ModelBenchmark:
         for i, v in enumerate(df["Params (M)"]):
             axes[0].text(i, v + 1, f'{v:.1f}M', ha='center', fontsize=10)
         
-        # GPU Memory
-        axes[1].bar(df["Model"], df["GPU Mem (MB)"], color=['#3498db', '#e74c3c', '#2ecc71'])
+        # GPU Memory (fixed-batch probe; blank with an n/a note on CPU runs,
+        # where every value is NaN and bar() cannot plot).
         axes[1].set_ylabel('GPU Memory (MB)', fontsize=12)
-        axes[1].set_title('Memory Usage: Peak GPU Memory', fontsize=14, fontweight='bold')
-        for i, v in enumerate(df["GPU Mem (MB)"]):
-            axes[1].text(i, v + 5, f'{v:.0f}', ha='center', fontsize=10)
+        axes[1].set_title(f'Memory Usage: {_VRAM_COL}', fontsize=13, fontweight='bold')
+        if df[_VRAM_COL].notna().any():
+            axes[1].bar(df["Model"], df[_VRAM_COL], color=['#3498db', '#e74c3c', '#2ecc71'])
+            for i, v in enumerate(df[_VRAM_COL]):
+                if pd.notna(v):
+                    axes[1].text(i, v + 5, f'{v:.0f}', ha='center', fontsize=10)
+        else:
+            axes[1].text(0.5, 0.5, 'n/a (CPU)', ha='center', va='center',
+                         transform=axes[1].transAxes, fontsize=12, color='gray')
         
         plt.tight_layout()
         plt.savefig(str(output_dir / "complexity_comparison.png"), dpi=150, bbox_inches='tight')
@@ -421,8 +482,11 @@ class ModelBenchmark:
                    f"({df['FPS'].max():.2f} FPS)\n")
             f.write(f"Smallest:         {df.loc[df['Params (M)'].idxmin(), 'Model']} "
                    f"({df['Params (M)'].min():.1f}M params)\n")
-            f.write(f"Lowest GPU Mem:   {df.loc[df['GPU Mem (MB)'].idxmin(), 'Model']} "
-                   f"({df['GPU Mem (MB)'].min():.0f} MB)\n\n")
+            if df[_VRAM_COL].notna().any():
+                f.write(f"Lowest VRAM:      {df.loc[df[_VRAM_COL].idxmin(), 'Model']} "
+                       f"({df[_VRAM_COL].min():.0f} MB, {_VRAM_COL})\n\n")
+            else:
+                f.write(f"Lowest VRAM:      n/a (CPU — {_VRAM_COL} needs a GPU)\n\n")
             
             # Detailed per-model analysis
             f.write("DETAILED PER-MODEL ANALYSIS\n")
@@ -435,7 +499,8 @@ class ModelBenchmark:
                     f.write(f"Architecture Complexity:\n")
                     f.write(f"  Parameters:       {results['model_params']:,}\n")
                     f.write(f"  Model Size:       {results['model_size_mb']:.2f} MB\n")
-                    f.write(f"  Peak GPU Memory:  {results['peak_memory_mb']:.2f} MB\n\n")
+                    f.write(f"  VRAM @ batch={results.get('vram_probe_batch', MEMORY_PROBE_BATCH_SIZE)} "
+                           f"(fixed, inference): {_format_vram(results.get('vram_probe_mb'))}\n\n")
                     
                     f.write(f"Accuracy Metrics (hard, argmax, macro excl. absent classes — UB-11/M2):\n")
                     f.write(f"  mIoU (macro):     {results['mean_iou']:.4f} ± {results['std_iou']:.4f}\n")
@@ -565,8 +630,10 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
         mean_inference_time = np.mean([r["mean_inference_time_ms"] for r in fold_results])
         std_inference_time = np.std([r["mean_inference_time_ms"] for r in fold_results])
         fps = 1000.0 / mean_inference_time if mean_inference_time > 0 else 0.0
-        peak_memory_mb = np.mean([r["peak_memory_mb"] for r in fold_results])
-        
+        # VRAM probe is model-deterministic (fixed batch, same device) — take a
+        # representative fold rather than averaging (avoids np.mean over None on CPU).
+        vram_probe_mb = fold_results[0].get("vram_probe_mb")
+
         # Aggregate per-class IoU means and stds across folds
         class_iou_means = []
         class_iou_stds = []
@@ -594,7 +661,8 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
             "timing_batch_size": fold_results[0].get("timing_batch_size"),
             "timing_dtype": fold_results[0].get("timing_dtype"),
             "timing_device": fold_results[0].get("timing_device"),
-            "peak_memory_mb": float(peak_memory_mb),
+            "vram_probe_mb": vram_probe_mb,
+            "vram_probe_batch": fold_results[0].get("vram_probe_batch"),
             "class_iou_means": class_iou_means,
             "class_iou_stds": class_iou_stds,
         }
@@ -611,8 +679,8 @@ def run_benchmark(models_dict: Dict[str, nn.Module], config: Config,
         print(f"  Inference Time:  {aggregated_results['mean_inference_time_ms']:.2f} ± {aggregated_results['std_inference_time_ms']:.2f} ms")
         print(f"  FPS:             {aggregated_results['fps']:.2f}")
         print(f"  Loss (CE+Dice):  {aggregated_results['avg_loss']:.4f}")
-        if torch.cuda.is_available():
-            print(f"  Peak GPU Memory: {aggregated_results['peak_memory_mb']:.2f} MB")
+        print(f"  VRAM @ batch={aggregated_results.get('vram_probe_batch', MEMORY_PROBE_BATCH_SIZE)} (fixed): "
+              f"{_format_vram(aggregated_results.get('vram_probe_mb'))}")
         print(f"==============================================================\n")
         
         # Save individual aggregated results to LOG_DIR
