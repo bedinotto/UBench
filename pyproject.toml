@@ -14,3 +14,8 @@ ignore = []
 [tool.pytest.ini_options]
 testpaths = ["codes/tests"]
 addopts = "-q"
+# Full-suite runs write ~10-15 GB of full-state checkpoints into pytest's
+# per-run temp dirs; the default keeps the last 3 runs, which turns a
+# near-full disk into spurious ENOSPC failures (UB-25).  Retain temp dirs
+# only for FAILED runs so a green suite leaves nothing behind (pytest >=7.3).
+tmp_path_retention_policy = "failed"

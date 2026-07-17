@@ -170,6 +170,7 @@ Update the **Status** column as work lands (`OPEN → IN-PROGRESS → FIXED@<sha
 | UB-22 | Hygiene | repo root, `.gitignore` | Scratch scripts committed; `inference_comparison.py` orphaned (wire or delete); `codes/tests/*` gitignored while `pytest` is required; `CLAUDE.md` gitignored. | OPEN |
 | UB-23 | Blocker | `codes/hardware_detector.py` | `detect()` calls `sys.exit(1)` when CUDA is unavailable; contradicts §3.1 CPU-first doctrine; blocks CI E2E. Phase 0 worked around it with a test-only runner that patches detection (removed by the fix: CPU profile behind explicit `UBENCH_ALLOW_CPU=1` opt-in). | FIXED@af14b13 |
 | UB-24 | Hygiene | `preprocess_data.py:22`, `unified_data.py:Config.__init__` | `preprocess_all_data()` builds a default `Config()`, whose constructor mkdirs **top-level** `outputs/{models,plots,predictions}` — clutter beside the real `outputs/<run_id>/` dirs on every fresh clone's first run. Found during T1.8's run-dir accounting. Fold into T2.6 or T3.1. | OPEN |
+| UB-25 | Hygiene | `codes/tests/*` subprocess runs | Full-suite runs persist ~10–15 GB of full-state checkpoints across retained pytest temp dirs (3-run default retention); near-full disks turn this into spurious ENOSPC reds. Mitigated by `tmp_path_retention_policy = "failed"` (Session 6); root-cause slimming (e.g., skip per-epoch resume checkpoints under smoke configs) decided in T2.6. | OPEN (mitigated) |
 
 ---
 
