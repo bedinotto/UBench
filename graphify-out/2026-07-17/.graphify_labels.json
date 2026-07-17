@@ -53,12 +53,8 @@
   "51": "graphify reference: add a URL and watch a folder",
   "52": "graphify reference: commit hook and native CLAUDE.md integration",
   "53": "graphify reference: incremental update and cluster-only",
-  "54": "Session 6 (final) — T2.1 (UB-09) + T2.2 (UB-11): honest timing & one metric authority — Phase-2 opener",
-  "55": "Phase-1 real-data validation checklist (GPU box)",
   "56": "graphify reference: GitHub clone and cross-repo merge",
   "57": "graphify reference: transcribe video and audio",
-  "58": "Session 3 — T1.3 (UB-05) + T1.4 (UB-03/04): batch-size contract & fold-count guard",
   "59": "graphify",
-  "60": "extraction-spec.md",
-  "61": "detect_and_optimize"
+  "60": "extraction-spec.md"
 }
