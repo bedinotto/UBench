@@ -19,3 +19,6 @@ addopts = "-q"
 # near-full disk into spurious ENOSPC failures (UB-25).  Retain temp dirs
 # only for FAILED runs so a green suite leaves nothing behind (pytest >=7.3).
 tmp_path_retention_policy = "failed"
+markers = [
+    "pretrained: exercises a real pretrained-weight download (needs network; run with UBENCH_ALLOW_DOWNLOADS=1)",
+]

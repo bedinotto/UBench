@@ -17,6 +17,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# Offline by default (T3.2): pretrained encoders must never download weights
+# during the suite. Explicit pretrained=True (the network-gated proof test)
+# still overrides this, as does a caller who sets UBENCH_PRETRAINED already.
+os.environ.setdefault("UBENCH_PRETRAINED", "0")
+
 
 # Region names must match codes/config.yaml `regions:` list exactly.
 # REGION_NAMES[0] = "background" (index 0 is never in polygon files).
