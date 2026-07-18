@@ -111,8 +111,12 @@ class UnifiedTrainer:
     Ensures consistent training, validation, and metric tracking
     """
 
-    # How many epoch checkpoints to keep on disk (older ones are pruned)
-    _CHECKPOINT_KEEP_LAST = 2
+    # How many epoch checkpoints to keep on disk (older ones are pruned).
+    # Resume only needs the most recent (UB-06 restores from the latest epoch),
+    # so keeping 1 halves the full-state checkpoint footprint that near-full
+    # disks turned into spurious ENOSPC test failures (UB-25). Re-verified
+    # against test_resume.py.
+    _CHECKPOINT_KEEP_LAST = 1
 
     def __init__(self, model: nn.Module, model_name: str,
                  train_loader: DataLoader, val_loader: DataLoader,
