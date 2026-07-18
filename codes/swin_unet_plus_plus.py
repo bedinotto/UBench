@@ -3,6 +3,16 @@ Thermal Facial Region Detection System - Swin-UNet++
 ====================================================
 Swin Transformer-based U-Net++ architecture for thermal face segmentation.
 Defines the SwinUNetPlusPlus model.
+
+.. warning::
+    **Known-defective attention (UB-17), retained only as a historical
+    baseline.** The shifted-window attention here has **no attention mask and
+    no relative position bias / positional embedding**, so window attention is
+    permutation-invariant and the deepest-stage shift is a no-op. It is *not*
+    repaired — the correct, pretrained replacement is ``swin_pretrained``
+    (timm SwinV2; see ``codes/swin_pretrained.py``, T3.2/M5). This module stays
+    registered only so the benchmark can compare against a from-scratch,
+    small-data baseline; do not treat its results as a fair Swin implementation.
 """
 
 import torch

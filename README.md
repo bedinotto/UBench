@@ -214,9 +214,12 @@ UBench/
 │   ├── unified_data.py            # Multi-dataset loader & regex matcher
 │   ├── unified_training.py        # PyTorch training loop (shared across models)
 │   ├── benchmark_models.py        # Speed & metric comparator
-│   ├── unet_v2.py                 # U-Net architecture
-│   ├── transunet.py               # TransUNet architecture
-│   ├── swin_unet_plus_plus.py     # Swin-UNet++ architecture
+│   ├── unet_v2.py                 # U-Net architecture (from scratch)
+│   ├── transunet.py               # TransUNet architecture (from scratch)
+│   ├── swin_unet_plus_plus.py     # Swin-UNet++ (from scratch; defective attn, UB-17 baseline)
+│   ├── swin_pretrained.py         # SwinV2 (timm, ImageNet-pretrained) + conv decoder
+│   ├── transunet_pretrained.py    # R50+ViT-B/16 hybrid (timm, ImageNet-pretrained)
+│   ├── pretrained_stem.py         # 1-channel stem adaptation (sum RGB kernels, M5)
 │   └── generate_boxes_polygons.py # Annotation generation helper
 │
 ├── data/                          # Extracted datasets (auto-generated)
@@ -334,7 +337,7 @@ Both `run.bat` and `run.sh` accept the following flags:
 |------|-------------|
 | `--skip-extract` | Skip ZIP extraction. Use if `data/` is already populated. |
 | `--skip-setup` | Skip environment setup and package installation. Use after the first run. |
-| `--models <name> [<name>...]` | Train only specific models. Choices: `unet`, `transunet`, `swin`. |
+| `--models <name> [<name>...]` | Train only specific models. Choices: `unet`, `transunet`, `swin`, `swin_pretrained`, `transunet_pretrained`. |
 | `--skip-benchmark` | Skip the benchmarking step after training. |
 | `--epochs N` | Override `codes/config.yaml` and train for `N` epochs. |
 | `--resume RUN_ID` | Reuse `outputs/<RUN_ID>` and `logs/<RUN_ID>` from a previous run and continue from its checkpoints. |
@@ -347,7 +350,22 @@ Both `run.bat` and `run.sh` accept the following flags:
 
 # Train two specific models
 ./run.sh --skip-extract --models transunet swin
+
+# Train the ImageNet-pretrained encoders (downloads timm weights on first use)
+./run.sh --skip-extract --models swin_pretrained transunet_pretrained
 ```
+
+#### Model choices
+
+| Key | Architecture | Weights |
+|-----|--------------|---------|
+| `unet` | U-Net (CNN) | from scratch |
+| `transunet` | TransUNet (ViT-B from scratch) | from scratch — small-data baseline (UB-16) |
+| `swin` | Swin-UNet++ | from scratch — defective-attention baseline (UB-17) |
+| `swin_pretrained` | SwinV2-tiny (timm) + conv decoder | **ImageNet-pretrained** |
+| `transunet_pretrained` | R50+ViT-B/16 hybrid (timm) | **ImageNet-pretrained** |
+
+The two pretrained encoders download ImageNet weights from the timm/HuggingFace hub on first use, adapting the 3-channel stem to 1-channel thermal input by **summing the pretrained RGB kernels** (M5). This needs network access; set `UBENCH_PRETRAINED=0` to build the identical architecture with **random** weights instead (this is what the test suite and CPU smoke use, so CI never downloads). The from-scratch trio is kept so the benchmark can compare pretrained-vs-scratch.
 
 ### Global Configuration (`codes/config.yaml`)
 `codes/config.yaml` is the **single** configuration file. It is validated by a typed schema (`codes/config_schema.py`) when the pipeline starts, so an **unknown key or wrong-typed value raises immediately** instead of being silently ignored — every key below is actually consumed.
