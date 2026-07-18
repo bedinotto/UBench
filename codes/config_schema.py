@@ -17,7 +17,7 @@ every key defined here is consumed somewhere — there are no dead keys.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -45,22 +45,14 @@ class ModelConfig(_Strict):
     num_classes: int = 10
 
 
-class BatchSizesConfig(_Strict):
-    """Per-model batch-size *overrides* (``training.batch_sizes:``).
-
-    Unconsumed dead keys (UB-12): the pipeline reads batch sizes from
-    ``hardware_detector`` (the single authority, UB-05), never from config.
-    Retained here only so the shipped file validates; deleted in the next
-    commit.
-    """
-
-    unet: Optional[int] = None
-    transunet: Optional[int] = None
-    swin: Optional[int] = None
-
-
 class TrainingConfig(_Strict):
-    """Training / cross-validation parameters (``training:`` section)."""
+    """Training / cross-validation parameters (``training:`` section).
+
+    Note: there is deliberately no ``batch_sizes`` key. Batch sizes come from
+    ``hardware_detector`` (the single authority, UB-05); a config override
+    would reintroduce the dual-authority that caused UB-05, so it is a separate
+    feature, not part of this dead-key cleanup (UB-12).
+    """
 
     learning_rate: float = 1e-4
     num_epochs: int = 100
@@ -68,7 +60,6 @@ class TrainingConfig(_Strict):
     random_seed: int = 42
     deterministic: bool = True
     test_subjects: List[str] = []
-    batch_sizes: BatchSizesConfig = BatchSizesConfig()
 
 
 _DEFAULT_REGIONS: List[str] = [

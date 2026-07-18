@@ -60,6 +60,17 @@ def test_wrong_type_raises(tmp_path):
         load_config(p)
 
 
+def test_dead_batch_sizes_key_rejected(tmp_path):
+    """training.batch_sizes was unconsumed (UB-12) and is now removed, so it
+    is an unknown key — proving hardware_detector is the sole batch authority."""
+    p = _write_yaml(
+        tmp_path,
+        {"training": {"batch_sizes": {"unet": 8, "transunet": 6, "swin": 6}}},
+    )
+    with pytest.raises(ValueError):
+        load_config(p)
+
+
 def test_missing_file_uses_defaults(tmp_path):
     """A missing config file yields all-default values (guards odd contexts)."""
     cfg = load_config(tmp_path / "does_not_exist.yaml")

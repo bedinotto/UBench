@@ -26,11 +26,6 @@ training:
   # only), which is backward-compatible. A real/citable run should reserve 1-2
   # subjects here. Overridable via the TEST_SUBJECTS env var (comma-separated).
   test_subjects: []
-  batch_sizes:
-    # Optional overrides, otherwise hardware_detector takes precedence
-    unet: null
-    transunet: null
-    swin: null
 
 regions:
   - "background"
