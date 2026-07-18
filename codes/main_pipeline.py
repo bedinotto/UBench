@@ -36,6 +36,7 @@ from codes.preprocess_data import preprocess_all_data
 
 # Import model architectures and registry
 from codes.model_registry import create_model
+from codes.config_schema import resolve_recipe
 # Import models to ensure they are registered
 import codes.unet_v2
 import codes.transunet
@@ -64,6 +65,19 @@ def collect_run_metadata(config, run_id: str, models_to_train: list[str]) -> dic
     testable. ``Pipeline`` writes the result to ``logs/<run_id>/run_metadata.json``.
     """
     cuda = torch.cuda.is_available()
+
+    # Effective per-family optimizer/scheduler recipe for each model (T3.3/M9),
+    # so a run records exactly which recipe produced its numbers. 'swin' is the
+    # CLI alias for the 'swin_unet_plus_plus' registry key used in the map.
+    def _registry_key(name: str) -> str:
+        return "swin_unet_plus_plus" if name == "swin" else name
+
+    recipes = {}
+    for name in models_to_train:
+        opt, sch = resolve_recipe(config.OPTIMIZER, config.SCHEDULER,
+                                  config.RECIPES, _registry_key(name))
+        recipes[name] = {"optimizer": opt.name, "scheduler": sch.name}
+
     return {
         "run_id": run_id,
         "git_sha": _git(["rev-parse", "HEAD"]),
@@ -75,6 +89,7 @@ def collect_run_metadata(config, run_id: str, models_to_train: list[str]) -> dic
         "random_seed": config.RANDOM_SEED,
         "deterministic": config.DETERMINISTIC,
         "models_to_train": list(models_to_train),
+        "recipes": recipes,
         "num_epochs": config.NUM_EPOCHS,
         "k_folds": config.K_FOLDS,
         "test_subjects": list(config.TEST_SUBJECTS),

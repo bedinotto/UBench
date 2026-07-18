@@ -219,3 +219,30 @@ def test_best_selected_by_miou_not_loss(tmp_path, monkeypatch):
     assert saved_at == [0.5]
     assert t.best_val_iou == 0.5
     assert t.best_val_loss == 0.1  # loss still tracked for logging
+
+
+# --------------------------------------------------------------------------- #
+# Resume recipe-mismatch guard (M4/R4): never load AdamW state into Adam.
+# --------------------------------------------------------------------------- #
+def test_resume_recipe_mismatch_raises(tmp_path):
+    t1 = _trainer(tmp_path, OptimizerConfig(name="adam"),
+                  SchedulerConfig(name="reduce_on_plateau"),
+                  num_epochs=1, n_batches=2)
+    ckpt = t1.save_checkpoint(epoch=0, train_loss=1.0, val_loss=1.0)
+    # Same model_key/fold/output_dir, a DIFFERENT recipe.
+    t2 = _trainer(tmp_path, OptimizerConfig(name="adamw"),
+                  SchedulerConfig(name="warmup_cosine"),
+                  num_epochs=1, n_batches=2)
+    with pytest.raises(ValueError, match="recipe"):
+        t2.load_checkpoint(ckpt)
+
+
+def test_resume_same_recipe_ok(tmp_path):
+    t1 = _trainer(tmp_path, OptimizerConfig(name="adam"),
+                  SchedulerConfig(name="reduce_on_plateau"),
+                  num_epochs=1, n_batches=2)
+    ckpt = t1.save_checkpoint(epoch=0, train_loss=1.0, val_loss=1.0)
+    t2 = _trainer(tmp_path, OptimizerConfig(name="adam"),
+                  SchedulerConfig(name="reduce_on_plateau"),
+                  num_epochs=2, n_batches=2)
+    assert t2.load_checkpoint(ckpt) == 0  # last completed epoch, no error

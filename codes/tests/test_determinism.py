@@ -124,17 +124,23 @@ def test_real_loaders_carry_generator_and_worker_init(tmp_path) -> None:
 # --------------------------------------------------------------------------- #
 def test_run_metadata_has_provenance_keys() -> None:
     """collect_run_metadata records git/env/seed/config provenance (M6)."""
+    from codes.config_schema import OptimizerConfig, RecipesConfig, SchedulerConfig
+
     cfg = SimpleNamespace(
         RANDOM_SEED=42, DETERMINISTIC=True, NUM_EPOCHS=1, K_FOLDS=2,
         TEST_SUBJECTS=["S5"], IMAGE_SIZE=(256, 256), NUM_CLASSES=10,
+        OPTIMIZER=OptimizerConfig(), SCHEDULER=SchedulerConfig(),
+        RECIPES=RecipesConfig(),
     )
     md = main_pipeline.collect_run_metadata(cfg, "run-x", ["unet"])
     required = {
         "run_id", "git_sha", "git_dirty", "torch_version", "cuda_available",
         "random_seed", "deterministic", "test_subjects", "num_epochs",
-        "k_folds", "lockfile_hash",
+        "k_folds", "lockfile_hash", "recipes",
     }
     assert required <= set(md)
     assert md["random_seed"] == 42
     assert md["deterministic"] is True
     assert md["test_subjects"] == ["S5"]
+    # Effective recipe recorded per model (M9).
+    assert md["recipes"]["unet"] == {"optimizer": "adam", "scheduler": "reduce_on_plateau"}

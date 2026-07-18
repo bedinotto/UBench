@@ -475,6 +475,11 @@ class UnifiedTrainer:
             # ── identity ──────────────────────────────────────────────
             'epoch': epoch,
             'model_name': self.model_name,
+            # Effective recipe (T3.3): resume must not load an optimizer/
+            # scheduler state saved under a different recipe (e.g. AdamW state
+            # into an Adam optimizer). load_checkpoint hard-errors on mismatch.
+            'optimizer_name': self._optimizer_name,
+            'scheduler_name': self._scheduler_name,
             # ── learnable state ───────────────────────────────────────
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -525,6 +530,23 @@ class UnifiedTrainer:
         print(f"  ♻️  Resuming from checkpoint: {ckpt_path.name}")
         checkpoint = torch.load(ckpt_path, map_location=self.config.DEVICE,
                                 weights_only=True)
+
+        # Recipe-mismatch guard (T3.3/M4/R4): the checkpoint's optimizer/
+        # scheduler state is only compatible with the same recipe. Loading an
+        # AdamW state into an Adam optimizer (or a SequentialLR state into a
+        # ReduceLROnPlateau) is silently wrong, so refuse it. Pre-T3.3
+        # checkpoints predate this key and are trusted (they were Adam/plateau).
+        ckpt_opt = checkpoint.get('optimizer_name')
+        ckpt_sch = checkpoint.get('scheduler_name')
+        if ckpt_opt is not None and (ckpt_opt != self._optimizer_name
+                                     or ckpt_sch != self._scheduler_name):
+            raise ValueError(
+                f"Cannot resume {self.model_name}: checkpoint recipe "
+                f"(optimizer={ckpt_opt}, scheduler={ckpt_sch}) differs from the "
+                f"current recipe (optimizer={self._optimizer_name}, "
+                f"scheduler={self._scheduler_name}). A recipe change applies to "
+                f"fresh runs only; start a new run instead of --resume."
+            )
 
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
