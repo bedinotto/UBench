@@ -157,12 +157,16 @@ class Config:
             )
     
     def _create_output_dirs(self):
-        """Create output directories if they don't exist"""
+        """Create the run's output/log roots only.
+
+        The ``models``/``plots``/``predictions`` subdirs are created on demand by
+        their writers (checkpoint save, plot export) under ``outputs/<run_id>/``.
+        Pre-creating them here left stray top-level ``outputs/{models,plots,
+        predictions}`` dirs whenever a default ``Config()`` was built (e.g. in
+        ``preprocess_all_data``) — clutter beside the real run dirs (UB-24).
+        """
         self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.LOG_DIR.mkdir(parents=True, exist_ok=True)
-        (self.OUTPUT_DIR / "models").mkdir(parents=True, exist_ok=True)
-        (self.OUTPUT_DIR / "plots").mkdir(parents=True, exist_ok=True)
-        (self.OUTPUT_DIR / "predictions").mkdir(parents=True, exist_ok=True)
 
 
 class MultiDirectoryDataLoader:

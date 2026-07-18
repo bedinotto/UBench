@@ -131,3 +131,10 @@ def test_full_pipeline_smoke(synthetic_dataset, monkeypatch):
         f"Expected held-out TEST columns; got columns: {list(df.columns)}"
     )
     assert "Held-out TEST subjects" in output
+
+    # UB-24: no stray top-level outputs/{models,plots,predictions} — those subdirs
+    # live only under outputs/<run_id>/ (Config no longer pre-creates them).
+    for stray in ("models", "plots", "predictions"):
+        assert not (Path("outputs") / stray).exists(), (
+            f"stray top-level outputs/{stray} dir (UB-24 regression)"
+        )
