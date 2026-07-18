@@ -105,6 +105,78 @@ class CombinedLoss(nn.Module):
             return self.ce_weight * ce + self.dice_weight * dice
 
 
+def _balanced_weights_from_loader(train_loader, num_classes: int) -> torch.Tensor:
+    """Inverse-frequency class weights counted from the training masks.
+
+    ``weight[c] = total_pixels / (num_classes * count[c])``. Classes absent
+    from the training split get weight 0 — they never appear as a CE target so
+    the value is inert, but must not be ``inf`` (M4).
+
+    Args:
+        train_loader: iterable yielding ``(image, mask, ...)`` batches; only the
+            mask (index 1, an integer class map) is read. **Training split
+            only** — never val/test (M1).
+        num_classes: number of segmentation classes.
+    """
+    counts = torch.zeros(num_classes, dtype=torch.double)
+    for batch in train_loader:
+        mask = batch[1]
+        counts += torch.bincount(
+            mask.reshape(-1).long(), minlength=num_classes
+        ).double()
+    total = counts.sum()
+    weights = torch.zeros(num_classes, dtype=torch.float)
+    present = counts > 0
+    weights[present] = (total / (num_classes * counts[present])).float()
+    return weights
+
+
+def resolve_class_weights(spec, num_classes: int, *,
+                          train_loader=None,
+                          device=None) -> Optional[torch.Tensor]:
+    """Resolve ``loss.class_weights`` config into an optional CE weight tensor.
+
+    Args:
+        spec: config value — ``None`` (uniform, the default), the string
+            ``"balanced"`` (inverse train-fold frequency), or an explicit list
+            of ``num_classes`` floats.
+        num_classes: number of segmentation classes.
+        train_loader: required only for ``"balanced"``; class frequencies are
+            counted from the **training** split alone (M1/M4).
+        device: device for the returned tensor.
+
+    Returns:
+        A float tensor of shape ``(num_classes,)`` or ``None`` (uniform — the
+        default keeps the loss numerically identical to pre-T3.1 behavior).
+
+    Raises:
+        ValueError: on an unsupported string, a wrong-length list, or a
+            ``"balanced"`` request without a ``train_loader`` (R4).
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        if spec != "balanced":
+            raise ValueError(
+                f"loss.class_weights='{spec}' is not supported; use null, "
+                f"'balanced', or a list of {num_classes} floats."
+            )
+        if train_loader is None:
+            raise ValueError(
+                "loss.class_weights='balanced' requires a train_loader to "
+                "count class frequencies."
+            )
+        weights = _balanced_weights_from_loader(train_loader, num_classes)
+    else:
+        if len(spec) != num_classes:
+            raise ValueError(
+                f"loss.class_weights list has {len(spec)} entries; "
+                f"expected {num_classes}."
+            )
+        weights = torch.tensor(spec, dtype=torch.float)
+    return weights.to(device) if device is not None else weights
+
+
 class UnifiedTrainer:
     """
     Unified training pipeline for all models
@@ -152,16 +224,45 @@ class UnifiedTrainer:
         self.grad_clip_norm = grad_clip_norm
         self.max_nan_tolerance = max_nan_tolerance
 
-        # Compute class weights if they are present in config (otherwise None)
-        class_weights = None
-        if hasattr(config, 'CLASS_WEIGHTS') and config.CLASS_WEIGHTS is not None:
-            class_weights = torch.tensor(config.CLASS_WEIGHTS, dtype=torch.float).to(config.DEVICE)
-            
-        # Loss and optimizer
-        self.criterion = CombinedLoss(class_weights=class_weights)
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        # Loss / optimizer / scheduler are read from the validated config
+        # (T3.1/UB-12) instead of hardcoded literals. Defaults reproduce the
+        # previous behavior exactly, so a run's numbers are unchanged.
+        loss_cfg = config.LOSS
+        opt_cfg = config.OPTIMIZER
+        sch_cfg = config.SCHEDULER
+
+        # Class weights: None (uniform, default) / "balanced" (from the TRAIN
+        # split only, M1) / explicit list. Default keeps the loss identical.
+        class_weights = resolve_class_weights(
+            loss_cfg.class_weights, config.NUM_CLASSES,
+            train_loader=train_loader, device=config.DEVICE,
+        )
+        self.criterion = CombinedLoss(
+            ce_weight=loss_cfg.ce_weight,
+            dice_weight=loss_cfg.dice_weight,
+            class_weights=class_weights,
+        )
+
+        # Only the currently-validated recipes are wired; anything else is a
+        # hard error rather than a silent fallback (R4). T3.3 adds AdamW +
+        # warmup/cosine per model family.
+        if opt_cfg.name != "adam":
+            raise ValueError(
+                f"Unsupported optimizer.name='{opt_cfg.name}'. Only 'adam' is "
+                f"wired today; per-family recipes arrive in T3.3."
+            )
+        self.optimizer = torch.optim.Adam(
+            model.parameters(), lr=learning_rate,
+            betas=tuple(opt_cfg.betas), weight_decay=opt_cfg.weight_decay,
+        )
+        if sch_cfg.name != "reduce_on_plateau":
+            raise ValueError(
+                f"Unsupported scheduler.name='{sch_cfg.name}'. Only "
+                f"'reduce_on_plateau' is wired today; cosine/warmup arrive in T3.3."
+            )
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', patience=5, factor=0.5
+            self.optimizer, mode='min',
+            patience=sch_cfg.patience, factor=sch_cfg.factor,
         )
         
         # Validation metrics go through the single shared authority (UB-11/R5):

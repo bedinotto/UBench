@@ -111,6 +111,13 @@ class Config:
     # Default empty (CV only); overridable via the TEST_SUBJECTS env var.
     TEST_SUBJECTS = list(_validated.training.test_subjects)
 
+    # Loss / optimizer / scheduler recipes (validated sub-configs, T3.1). The
+    # trainer reads these instead of hardcoded literals; defaults reproduce the
+    # previous behavior exactly (UB-12).
+    LOSS = _validated.loss
+    OPTIMIZER = _validated.optimizer
+    SCHEDULER = _validated.scheduler
+
     # Thermal conversion
     RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
 

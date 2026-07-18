@@ -17,10 +17,10 @@ every key defined here is consumed somewhere — there are no dead keys.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 
 class _Strict(BaseModel):
@@ -62,6 +62,57 @@ class TrainingConfig(_Strict):
     test_subjects: List[str] = []
 
 
+class LossConfig(_Strict):
+    """Combined Cross-Entropy + Dice loss (``loss:`` section).
+
+    ``class_weights`` controls the CrossEntropy per-class weighting:
+
+    * ``null`` — uniform (the current default; numbers unchanged by T3.1).
+    * ``"balanced"`` — inverse **train-fold** class frequency, recomputed per
+      fold from the training split only (never val/test). Opt-in.
+    * an explicit list of ``num_classes`` floats.
+    """
+
+    ce_weight: float = 0.5
+    dice_weight: float = 0.5
+    class_weights: Optional[Union[str, List[float]]] = None
+
+    @field_validator("class_weights")
+    @classmethod
+    def _valid_class_weights(cls, value):
+        if isinstance(value, str) and value != "balanced":
+            raise ValueError(
+                "loss.class_weights string must be 'balanced' "
+                "(or null, or a list of per-class floats)"
+            )
+        return value
+
+
+class OptimizerConfig(_Strict):
+    """Optimizer recipe (``optimizer:`` section).
+
+    Shaped so T3.3 can extend it with per-family recipes (e.g. AdamW + warmup
+    for transformers); only ``adam`` is wired today and the trainer raises on
+    any other ``name``.
+    """
+
+    name: str = "adam"
+    weight_decay: float = 0.0
+    betas: Tuple[float, float] = (0.9, 0.999)
+
+
+class SchedulerConfig(_Strict):
+    """LR scheduler recipe (``scheduler:`` section).
+
+    Only ``reduce_on_plateau`` is wired today; cosine/warmup arrive with T3.3
+    and the trainer raises on any other ``name``.
+    """
+
+    name: str = "reduce_on_plateau"
+    patience: int = 5
+    factor: float = 0.5
+
+
 _DEFAULT_REGIONS: List[str] = [
     "background",
     "Contorno inferior do Rosto",
@@ -87,6 +138,9 @@ class RootConfig(_Strict):
     paths: PathsConfig = PathsConfig()
     model: ModelConfig = ModelConfig()
     training: TrainingConfig = TrainingConfig()
+    loss: LossConfig = LossConfig()
+    optimizer: OptimizerConfig = OptimizerConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
     regions: List[str] = _DEFAULT_REGIONS
 
 

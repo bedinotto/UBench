@@ -27,6 +27,32 @@ training:
   # subjects here. Overridable via the TEST_SUBJECTS env var (comma-separated).
   test_subjects: []
 
+# Loss function (Combined Cross-Entropy + Dice). Defaults reproduce the
+# previously-hardcoded CombinedLoss(ce_weight=0.5, dice_weight=0.5).
+loss:
+  ce_weight: 0.5
+  dice_weight: 0.5
+  # null = uniform (current default); "balanced" = inverse train-fold class
+  # frequency (opt-in, recomputed per fold from the training split only); or an
+  # explicit list of `num_classes` floats.
+  class_weights: null
+
+# Optimizer. Defaults reproduce the previously-hardcoded
+# Adam(lr=training.learning_rate, betas=(0.9, 0.999), weight_decay=0).
+# Only `adam` is wired today; per-family recipes (AdamW + warmup) land in T3.3.
+optimizer:
+  name: adam
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+
+# LR scheduler. Defaults reproduce the previously-hardcoded
+# ReduceLROnPlateau(mode='min', patience=5, factor=0.5).
+# Only `reduce_on_plateau` is wired today; cosine/warmup land in T3.3.
+scheduler:
+  name: reduce_on_plateau
+  patience: 5
+  factor: 0.5
+
 regions:
   - "background"
   - "Contorno inferior do Rosto"

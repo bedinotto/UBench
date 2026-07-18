@@ -23,6 +23,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from codes.benchmark_models import timed_inference
+from codes.config_schema import LossConfig, OptimizerConfig, SchedulerConfig
 from codes.unified_training import UnifiedTrainer
 
 
@@ -130,6 +131,11 @@ def test_validate_emits_no_timing(tmp_path) -> None:
         DEVICE=torch.device("cpu"),
         NUM_CLASSES=num_classes,
         OUTPUT_DIR=tmp_path,
+        # Loss/optimizer/scheduler recipes the trainer now reads from config
+        # (T3.1/UB-12); schema defaults reproduce the old hardcoded values.
+        LOSS=LossConfig(),
+        OPTIMIZER=OptimizerConfig(),
+        SCHEDULER=SchedulerConfig(),
     )
     model = nn.Conv2d(1, num_classes, kernel_size=1)  # (N,1,H,W) -> (N,C,H,W)
 
