@@ -24,6 +24,7 @@ from codes.config_schema import (
     load_config,
     resolve_recipe,
 )
+from codes.naming import checkpoint_path
 from codes.unified_training import UnifiedTrainer, warmup_cosine_split
 
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config.yaml"
@@ -186,3 +187,35 @@ def test_warmup_cosine_steps_per_batch_without_arg(tmp_path):
     # One no-arg step per batch (3 batches), never the epoch-level metric step.
     assert len(spy.calls) == 3
     assert all(args == () for args in spy.calls)
+
+
+# --------------------------------------------------------------------------- #
+# Selection by val mIoU, not val loss (M4/UB-18).
+# --------------------------------------------------------------------------- #
+def test_best_selected_by_miou_not_loss(tmp_path, monkeypatch):
+    t = _trainer(tmp_path, OptimizerConfig(name="adam"),
+                 SchedulerConfig(name="reduce_on_plateau"),
+                 num_epochs=2, n_batches=1)
+    # epoch 0: high mIoU, high loss; epoch 1: low mIoU, low loss.
+    # Loss-selection would pick epoch 1; mIoU-selection must keep epoch 0.
+    seq = iter([(1.0, 0.5, 0.5), (0.1, 0.2, 0.2)])  # (val_loss, val_iou, val_dice)
+    monkeypatch.setattr(t, "validate", lambda: next(seq))
+    monkeypatch.setattr(t, "train_epoch", lambda: 0.0)
+
+    best_path = str(checkpoint_path(tmp_path, "m", 1, "best"))
+    saved_at = []
+    real_save = torch.save
+
+    def spy_save(obj, path, *a, **k):
+        if str(path) == best_path:
+            saved_at.append(t.best_val_iou)
+        return real_save(obj, path, *a, **k)
+
+    monkeypatch.setattr(torch, "save", spy_save)
+    t.train()
+
+    # Best written once, at the mIoU-best epoch (0.5); epoch 1 (0.2) did not
+    # overwrite despite its lower loss.
+    assert saved_at == [0.5]
+    assert t.best_val_iou == 0.5
+    assert t.best_val_loss == 0.1  # loss still tracked for logging

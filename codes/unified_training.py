@@ -304,7 +304,9 @@ class UnifiedTrainer:
         self.val_ious = []
         self.val_dice_scores = []
         self.best_val_loss = float('inf')
-        self.best_val_iou = 0.0
+        # -1.0 sentinel (not 0.0) so the first epoch always saves a best model
+        # by val mIoU, even if the initial mIoU is 0.0 (M4 selection).
+        self.best_val_iou = -1.0
 
         # Model parameters
         self.model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -741,18 +743,23 @@ class UnifiedTrainer:
             current_lr = self.optimizer.param_groups[0]['lr']
             print(f"  Learning Rate:  {current_lr:.6f}")
 
-            # Save best model (weights-only, based on validation loss)
+            # Track best val loss for logging/history only (no longer the
+            # selection criterion).
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+
+            # Save the best model by val **mIoU** — the headline metric (M4/
+            # UB-18). Previously "best" was chosen by val *loss* while the
+            # reported/benchmarked headline was mIoU: a selection/report
+            # mismatch. best_val_iou starts at -1.0 so the first epoch always
+            # saves at least one checkpoint.
+            if val_iou > self.best_val_iou:
+                self.best_val_iou = val_iou
                 model_path = checkpoint_path(self.config.OUTPUT_DIR,
                                              self.model_key, self.fold, "best")
                 model_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(self.model.state_dict(), model_path)
-                print(f"  ✅ Saved best model to: {model_path}")
-
-            # Track best IoU
-            if val_iou > self.best_val_iou:
-                self.best_val_iou = val_iou
+                print(f"  ✅ Saved best model (val mIoU={val_iou:.4f}) to: {model_path}")
 
             # ── Per-epoch checkpoint (full state — enables crash recovery) ──
             self.save_checkpoint(epoch=epoch, train_loss=train_loss, val_loss=val_loss)
