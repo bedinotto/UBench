@@ -67,5 +67,9 @@
   "65": "Session 8 — T2.5 (UB-20a/M6) + T2.6 (UB-15/22, UB-24/UB-25): determinism & dead-code sweep",
   "66": "SegmentationMetrics",
   "67": "model_registry.py",
-  "68": "SwinUNetPlusPlus"
+  "68": "SwinUNetPlusPlus",
+  "69": "OptimizerConfig",
+  "70": "Session 9 — T3.1 (UB-12): one validated config authority (Phase-3 opener)",
+  "71": "Session 9 — T3.1 (UB-12): one validated config authority (Phase-3 opener)",
+  "72": "_raw_to_celsius"
 }
