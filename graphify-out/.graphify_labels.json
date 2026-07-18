@@ -60,5 +60,12 @@
   "58": "Session 3 — T1.3 (UB-05) + T1.4 (UB-03/04): batch-size contract & fold-count guard",
   "59": "graphify",
   "60": "extraction-spec.md",
-  "61": "detect_and_optimize"
+  "61": "detect_and_optimize",
+  "62": "UnifiedTrainer",
+  "63": "create_test_loader",
+  "64": "Session 8 — T2.5 (UB-20a/M6) + T2.6 (UB-15/22, UB-24/UB-25): determinism & dead-code sweep",
+  "65": "Session 8 — T2.5 (UB-20a/M6) + T2.6 (UB-15/22, UB-24/UB-25): determinism & dead-code sweep",
+  "66": "SegmentationMetrics",
+  "67": "model_registry.py",
+  "68": "SwinUNetPlusPlus"
 }

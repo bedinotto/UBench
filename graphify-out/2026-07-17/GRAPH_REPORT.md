@@ -1,16 +1,16 @@
 # Graph Report - UBench  (2026-07-17)
 
 ## Corpus Check
-- 70 files · ~56,713 words
+- 74 files · ~61,950 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 891 nodes · 1308 edges · 62 communities (55 shown, 7 thin omitted)
+- 957 nodes · 1438 edges · 62 communities (55 shown, 7 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 25 edges (avg confidence: 0.59)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ffca3452`
+- Built from commit: `0ca7985e`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -71,28 +71,28 @@
 - detect_and_optimize
 
 ## God Nodes (most connected - your core abstractions)
-1. `Config` - 33 edges
+1. `Config` - 37 edges
 2. `UnifiedTrainer` - 23 edges
 3. `Pipeline` - 20 edges
 4. `SetupManager` - 20 edges
 5. `MultiDirectoryDataLoader` - 20 edges
-6. `SegmentationMetrics` - 18 edges
+6. `SegmentationMetrics` - 19 edges
 7. `Graphify Full Pipeline` - 16 edges
-8. `run_pipeline_subprocess()` - 15 edges
-9. `run_benchmark()` - 13 edges
-10. `HardwareProfile` - 13 edges
+8. `run_benchmark()` - 15 edges
+9. `run_pipeline_subprocess()` - 15 edges
+10. `load_split_metadata()` - 15 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `Phase 1 Session 1 Plan (UB-23, UB-20 pin, T1.1)` --references--> `UB-01: Preprocessing Never Invoked (FIXED@03e6dbb)`  [EXTRACTED]
-  prompts/phase1_session1.md → CLAUDE.md
 - `Automatic Offline Preprocessing (--force-preprocess)` --conceptually_related_to--> `UB-01: Preprocessing Never Invoked (FIXED@03e6dbb)`  [INFERRED]
   README.md → CLAUDE.md
-- `Phase 1 Session 1 Plan (UB-23, UB-20 pin, T1.1)` --references--> `UB-02: Checkpoint Filename Contract Mismatch (current frontier)`  [EXTRACTED]
-  prompts/phase1_session1.md → CLAUDE.md
 - `ModelBenchmark` --uses--> `SegmentationMetrics`  [INFERRED]
   codes/benchmark_models.py → codes/metrics.py
 - `ModelBenchmark` --uses--> `Config`  [INFERRED]
   codes/benchmark_models.py → codes/unified_data.py
+- `ModelBenchmark` --uses--> `CombinedLoss`  [INFERRED]
+  codes/benchmark_models.py → codes/unified_training.py
+- `Pipeline` --uses--> `HardwareProfile`  [INFERRED]
+  codes/main_pipeline.py → codes/hardware_detector.py
 
 ## Import Cycles
 - None detected.
@@ -105,12 +105,12 @@
 ## Communities (62 total, 7 thin omitted)
 
 ### Community 0 - "Benchmark & Orchestration Layer"
-Cohesion: 0.05
-Nodes (36): Measure per-image inference latency honestly (UB-09, M3).      Two correctness p, timed_inference(), _fake_loader(), _FakeImages, _FakeModel, Dataset, MonkeyPatch, Timing honesty tests (UB-09, T2.1).  Two guarantees:  * ``benchmark_models.timed (+28 more)
+Cohesion: 0.09
+Nodes (20): Measure per-image inference latency honestly (UB-09, M3).      Two correctness p, timed_inference(), _fake_loader(), _FakeImages, _FakeModel, Dataset, MonkeyPatch, Timing honesty tests (UB-09, T2.1).  Two guarantees:  * ``benchmark_models.timed (+12 more)
 
 ### Community 1 - "Model Registry & Swin-UNet++"
-Cohesion: 0.11
-Nodes (19): compute_segmentation_metrics(), Tensor, One-shot metrics for a single ``(logits, target)`` pair.      Convenience wrappe, Accumulate a confusion matrix and derive hard IoU / Dice from it.      Usage mir, Clear all accumulated state., Accumulate one batch.          Args:             logits_or_preds: either raw log, Return hard IoU/Dice with macro (excl. absent) and background split.          Re, SegmentationMetrics (+11 more)
+Cohesion: 0.14
+Nodes (16): compute_segmentation_metrics(), Tensor, One-shot metrics for a single ``(logits, target)`` pair.      Convenience wrappe, Accumulate one batch.          Args:             logits_or_preds: either raw log, Return hard IoU/Dice with macro (excl. absent) and background split.          Re, _logits_from_argmax(), Tensor, Build logits whose argmax over dim=1 is exactly ``pred`` (N, H, W). (+8 more)
 
 ### Community 2 - "Hardware Detection & CPU Mode"
 Cohesion: 0.22
@@ -121,12 +121,12 @@ Cohesion: 0.09
 Nodes (17): Upgrade pip to latest version, Detect the CUDA driver version using nvidia-smi.         Returns a version tuple, Return True if an already-installed PyTorch build has CUDA support.         Uses, Install the correct CUDA-enabled PyTorch build.         Plain `pip install torch, Manages cross-platform setup and dependency installation, Install non-PyTorch dependencies from requirements.txt, Install all dependencies (PyTorch CUDA first, then the rest), Check CUDA availability using a subprocess.          Using a subprocess (rather (+9 more)
 
 ### Community 4 - "Training Loop Internals"
-Cohesion: 0.12
-Nodes (24): checkpoint_path(), epoch_checkpoint_glob(), Path, Single authority for checkpoint file naming (UB-02, R5).  Registry keys (``unet`, Reject anything that is not a lowercase snake_case registry key.      Display na, Return the canonical checkpoint path for (model_key, fold, kind).      Args:, Glob pattern matching every epoch checkpoint of one (key, fold) series.      Use, _validate_model_key() (+16 more)
+Cohesion: 0.06
+Nodes (40): checkpoint_path(), epoch_checkpoint_glob(), Path, Single authority for checkpoint file naming (UB-02, R5).  Registry keys (``unet`, Reject anything that is not a lowercase snake_case registry key.      Display na, Return the canonical checkpoint path for (model_key, fold, kind).      Args:, Glob pattern matching every epoch checkpoint of one (key, fold) series.      Use, _validate_model_key() (+32 more)
 
 ### Community 5 - "Data Extraction & LFS"
-Cohesion: 0.06
-Nodes (37): check_data_status(), _discover_zip_files(), extract_all_data(), _extract_zip(), _generate_annotations(), _is_data_already_extracted(), _is_lfs_pointer(), _process_extracted_contents() (+29 more)
+Cohesion: 0.07
+Nodes (35): check_data_status(), _discover_zip_files(), extract_all_data(), _extract_zip(), _generate_annotations(), _is_data_already_extracted(), _is_lfs_pointer(), _process_extracted_contents() (+27 more)
 
 ### Community 6 - "Graphify Skill Docs"
 Cohesion: 0.09
@@ -137,36 +137,36 @@ Cohesion: 0.15
 Nodes (16): _metadata_frame(), DataFrame, UB-03/UB-04: fold-count guard with leave-subjects-out semantics.  ``GroupKFold(g, Tiny stand-in for metadata.csv: sample_id + dataset columns only., 3 subjects, K=5 → effective_k == 3, loud warning naming both., 2 subjects, K=5 → effective_k == 2 (the minimum viable CV)., 1 subject → clear leave-subjects-out error, not sklearn's., K <= n_groups → requested K unchanged, no warning emitted. (+8 more)
 
 ### Community 8 - "TransUNet Architecture"
-Cohesion: 0.10
-Nodes (12): CNNEncoder, MLP, MultiHeadAttention, CNN encoder for feature extraction (ResNet-50 style), Multi-head self-attention mechanism, TransUNet: Transformer-CNN Hybrid Architecture, MLP block for transformer, Transformer encoder block (+4 more)
+Cohesion: 0.11
+Nodes (13): CNNEncoder, MLP, MultiHeadAttention, Thermal Facial Region Detection System - TransUNet =============================, CNN encoder for feature extraction (ResNet-50 style), Multi-head self-attention mechanism, TransUNet: Transformer-CNN Hybrid Architecture, MLP block for transformer (+5 more)
 
 ### Community 9 - "test_preprocess_offsets.py"
-Cohesion: 0.17
-Nodes (18): _assert_aligned(), _centroid(), _expected_mask(), offset_dataset(), MonkeyPatch, ndarray, Path, UB-08: polygon/mask offsets must use the *clamped* crop origin.  ``crop_to_bbox` (+10 more)
+Cohesion: 0.06
+Nodes (41): preprocess_all_data(), Offline Data Preprocessing Script ================================= Pre-computes, _assert_aligned(), _centroid(), _expected_mask(), offset_dataset(), MonkeyPatch, ndarray (+33 more)
 
 ### Community 10 - "NaN Debug Scripts (Ad-hoc)"
-Cohesion: 0.12
-Nodes (7): DoubleConv, Thermal Facial Region Detection System - U-Net Model ===========================, Double convolution block for U-Net, U-Net architecture for semantic segmentation, UNet, CombinedLoss, Combined Cross-Entropy and Dice Loss.      The forward pass is wrapped with auto
+Cohesion: 0.10
+Nodes (12): get_latest_checkpoint(), main(), Path, Inference & Model Comparison Script =================================== Loads th, Search for a model checkpoint across standard locations., DoubleConv, Thermal Facial Region Detection System - U-Net Model ===========================, Double convolution block for U-Net (+4 more)
 
 ### Community 11 - "Pipeline Stages (main_pipeline)"
-Cohesion: 0.10
-Nodes (18): main(), Pipeline, Path, Point ``outputs/latest`` at this run's output dir (UB-06).          The replacem, Run offline preprocessing when its outputs are missing (UB-01, T1.1).          T, Load annotations once (lightweight) — DataLoaders are created lazily., Create DataLoaders for a single model + fold (lazy, on-demand).          Uses ``, Shut down DataLoader workers and free GPU memory between runs. (+10 more)
+Cohesion: 0.13
+Nodes (12): Pipeline, Run offline preprocessing when its outputs are missing (UB-01, T1.1).          T, Load annotations once (lightweight) — DataLoaders are created lazily., Create DataLoaders for a single model + fold (lazy, on-demand).          Uses ``, Shut down DataLoader workers and free GPU memory between runs., Train a dynamic model from the registry on a specific fold, Train all selected models sequentially over all folds, Run comprehensive benchmark on all trained models, aggregating across all folds (+4 more)
 
 ### Community 12 - "Loss Functions (Dice/Combined)"
 Cohesion: 0.11
 Nodes (13): test_detector_initialization_and_prediction(), DiceLoss, Module, ndarray, Tensor, Dice Loss for segmentation.      NOTE: softmax on fp16 logits overflows (exp of, Inference class for detecting facial regions in thermal images, Normalize thermal image to [0, 1] range (+5 more)
 
 ### Community 13 - "Multi-Dataset Data Loading"
-Cohesion: 0.29
-Nodes (9): get_latest_checkpoint(), main(), Path, Inference & Model Comparison Script =================================== Loads th, Search for a model checkpoint across standard locations., create_kfold_data_loaders(), Create K-Fold training and validation data loaders from preprocessed offline arr, calculate_iou() (+1 more)
+Cohesion: 0.16
+Nodes (20): _cfg(), Held-out test-subject tests (M1, T2.4).  Subjects listed in ``config.test_subjec, With no test subjects: full CV pool, empty test set, no test loader., Fabricate data/processed/metadata.csv for the given subjects., No fold's train or val split may contain a held-out test subject., Reserving subjects that leave <2 in the CV pool raises the >=2 guard., A test subject not present in the data is a hard error, not a silent no-op., _subject_of() (+12 more)
 
 ### Community 14 - "ModelBenchmark Runner"
-Cohesion: 0.17
-Nodes (13): ModelBenchmark, DataFrame, DataLoader, Module, Path, Comprehensive benchmark for model comparison, Load trained model weights, Comprehensive benchmark of a single model                  Returns dictionary wi (+5 more)
+Cohesion: 0.23
+Nodes (11): evaluate_accuracy(), _format_vram(), DataLoader, Module, Path, Render a VRAM figure, or 'n/a (CPU)' when it was not measured., Accuracy of one model on one loader via the shared authority (UB-11/R5).      Re, Load trained model weights (+3 more)
 
 ### Community 15 - "E2E Smoke Test Gate"
 Cohesion: 0.06
-Nodes (44): apply_epochs_override(), Export ``--epochs`` to the ``NUM_EPOCHS`` env var Config reads (UB-13).      Exp, _error_logs_in_run_dir(), Path, UB-07: training failures must be recorded, reported, and fatal.  Before T1.6, th, error_log_*.txt inside the run's own log dir, parsed from the banner     so erro, Injected per-model failure → exit 1 + named summary + error log.      Without ``, --fail-fast: the first failure aborts the run — no later folds. (+36 more)
+Nodes (42): _error_logs_in_run_dir(), Path, UB-07: training failures must be recorded, reported, and fatal.  Before T1.6, th, error_log_*.txt inside the run's own log dir, parsed from the banner     so erro, Injected per-model failure → exit 1 + named summary + error log.      Without ``, --fail-fast: the first failure aborts the run — no later folds., A Pipeline() constructor crash reaches main()'s error-log writer.      An empty, _set_fast_env() (+34 more)
 
 ### Community 16 - "Synthetic Test Fixture"
 Cohesion: 0.28
@@ -201,32 +201,32 @@ Cohesion: 0.08
 Nodes (24): For /graphify add and --watch, For /graphify query, For the commit hook and native CLAUDE.md integration, For --update and --cluster-only, /graphify, Honesty Rules, Interpreter guard for subcommands, Part A - Structural extraction for code files (+16 more)
 
 ### Community 35 - "test_suite.py"
-Cohesion: 0.21
-Nodes (13): Known-Defect Ledger (UB-01..UB-23), UB-01: Preprocessing Never Invoked (FIXED@03e6dbb), preprocess_all_data(), Offline Data Preprocessing Script ================================= Pre-computes, normalize_thermal(), preprocess_mask(), preprocess_thermal_image(), ndarray (+5 more)
+Cohesion: 0.17
+Nodes (16): probe_peak_memory(), Peak GPU memory (MB) for one inference forward on a FIXED synthetic batch., _patch_cuda(), MonkeyPatch, Fixed-batch VRAM probe tests (UB-10, T2.3).  The benchmark used to read peak VRA, Records the shape of the tensor it is called with; ``eval()`` -> self., Make the CUDA branch runnable on a CPU box; return a call counter., On CPU there is nothing to measure: return None, render 'n/a (CPU)'. (+8 more)
 
 ### Community 36 - "hardware_detector.py"
 Cohesion: 0.05
-Nodes (35): ML & Benchmark Methodology Standards M1-M9, Non-Negotiable Engineering Rules R1-R10, Leave-Subjects-Out Cross-Validation (GroupKFold), Phased Task Plan (Phase 0-4), E2E Smoke Test Merge Gate (strict xfail frontier), Synthetic Dataset Fixture (S1-S5, 64x64 uint16), UB-20: Dependency & Reproducibility Hygiene, UB-23: Hardware Detector CPU Hard Exit (FIXED@af14b13) (+27 more)
+Nodes (43): ML & Benchmark Methodology Standards M1-M9, Non-Negotiable Engineering Rules R1-R10, Known-Defect Ledger (UB-01..UB-23), Leave-Subjects-Out Cross-Validation (GroupKFold), Phased Task Plan (Phase 0-4), E2E Smoke Test Merge Gate (strict xfail frontier), Synthetic Dataset Fixture (S1-S5, 64x64 uint16), UB-01: Preprocessing Never Invoked (FIXED@03e6dbb) (+35 more)
 
 ### Community 37 - "test_batch_size_keys.py"
-Cohesion: 0.13
-Nodes (18): get_registered_models(), Model Registry ============== Dynamically load and register model architectures., Decorator to register a model class, Return a list of registered model names, register_model(), Thermal Facial Region Detection System - Swin-UNet++ ===========================, _profile(), UB-05: batch-size dicts keyed by canonical registry names, hard lookup.  The har (+10 more)
+Cohesion: 0.15
+Nodes (12): The test loader contains exactly the configured test subjects, nothing else., test_held_out_loader_is_exactly_the_test_subjects(), create_single_fold_loader(), create_test_loader(), DataLoader, Dataset, Unified PyTorch Dataset reading from offline preprocessed arrays, Create DataLoaders for a **single** K-Fold split.      Unlike ``create_kfold_dat (+4 more)
 
 ### Community 38 - "swin_unet_plus_plus.py"
-Cohesion: 0.08
-Nodes (16): NestedConvBlock, PatchEmbed, PatchMerging, Patch Merging Layer for downsampling, Partition feature map into non-overlapping windows, Image to Patch Embedding, Nested convolution block for dense skip connections, Swin-UNet++ architecture with nested dense skip connections (+8 more)
+Cohesion: 0.05
+Nodes (40): create_model(), get_registered_models(), Module, Model Registry ============== Dynamically load and register model architectures., Decorator to register a model class, Return a list of registered model names, Instantiate a model by name, register_model() (+32 more)
 
 ### Community 39 - "DoubleConv"
 Cohesion: 0.22
 Nodes (8): End-of-session report — same format:, Session 5 — T1.7 (UB-06) + T1.8 (UB-13/14): resume & run-identity — Phase-1 closeout, Standing guardrails, Step 0 — SESSION ENTRY PROTOCOL (mandatory, per CLAUDE.md §10), Step 1 — Commit 1: T1.7 / UB-06 — `--resume <run_id>` and `outputs/latest`, Step 2 — Commit 2: T1.8 / UB-13+UB-14 — epochs flag honored, one run id per run, Step 3 — Docs commit: ledger flips (UB-06, UB-13, UB-14); §2 rewritten to **Phase-1 complete** (all §9 Phase-1 boxes checked; remaining risk shifts to Phase-2 number-trust items UB-09/10/11); §3.2 "--epochs 100 ignored" note removed; §4.7 consequences paragraph updated (auto-resume works via --resume; single timestamp per run); commit this session's prompt file., Step 4 — Push & remote CI
 
 ### Community 40 - "Config"
-Cohesion: 0.16
-Nodes (12): create_model(), Module, Instantiate a model by name, mock_config(), mock_model_path(), test_discovery_and_loading(), test_model_shapes(), Config (+4 more)
+Cohesion: 0.29
+Nodes (6): ModelBenchmark, DataFrame, Comprehensive benchmark for model comparison, Generate comparison visualizations and reports, Create comprehensive comparison plots, Generate detailed text report
 
 ### Community 41 - "unified_data.py"
-Cohesion: 0.19
-Nodes (11): UB-02: Checkpoint Filename Contract Mismatch (current frontier), Comprehensive Model Benchmarking Suite ====================================== Co, Main Training Pipeline Orchestrator =================================== Manages, Segmentation metric authority (UB-11, T2.2).  One definition per metric, shared, Metric authority tests (UB-11, T2.2).  One definition of IoU and Dice, shared by, Both modules resolve the same metric class (no divergent local copies)., test_trainer_and_benchmark_share_one_authority(), Unified Training Module ======================= Consistent training loops, loss (+3 more)
+Cohesion: 0.14
+Nodes (14): Comprehensive Model Benchmarking Suite ====================================== Co, Segmentation metric authority (UB-11, T2.2).  One definition per metric, shared, Accumulate a confusion matrix and derive hard IoU / Dice from it.      Usage mir, Clear all accumulated state., SegmentationMetrics, Metric authority tests (UB-11, T2.2).  One definition of IoU and Dice, shared by, Both modules resolve the same metric class (no divergent local copies)., test_trainer_and_benchmark_share_one_authority() (+6 more)
 
 ### Community 42 - "Session 2 — T1.2 (UB-02): unify the checkpoint filename contract — the smoke-goes-green session"
 Cohesion: 0.20
@@ -242,15 +242,15 @@ Nodes (8): End-of-session report — same format as Phase 0, plus:, Hard scope e
 
 ### Community 45 - "HardwareProfile"
 Cohesion: 0.22
-Nodes (7): crop_to_bbox reports the origin it actually used — clamped, never     negative —, test_crop_to_bbox_returns_clamped_origin(), MultiDirectoryDataLoader, Data loader that automatically discovers and loads from multiple dataset directo, Discover all Sx directories in data folder                  Returns:, Load annotations for a specific dataset directory                  Args:, Load annotations from all discovered dataset directories
+Nodes (8): End-of-session report — same format, plus:, Session 7 — T2.3 (UB-10) + T2.4 (M1): fixed-batch VRAM probe & held-out test subjects, Standing guardrails, Step 0 — SESSION ENTRY PROTOCOL (§10), Step 1 — Commit 1: T2.3 / UB-10 — fixed-batch-size VRAM probe, Step 2 — Commit 2: T2.4 / M1 — held-out test subjects, CV vs TEST report, Step 3 — Docs, Step 4 — Suite budget + push & CI
 
 ### Community 46 - "Session 6 — T2.1 (UB-09) + T2.2 (UB-11): honest timing & one metric definition — Phase-2 opener"
 Cohesion: 0.18
 Nodes (10): End-of-session report — same format, plus:, Session 6 (final) — T2.1 (UB-09) + T2.2 (UB-11): honest timing & one metric authority — Phase-2 opener, Standing guardrails, Step 0 — SESSION ENTRY PROTOCOL (§10) + one-time phase-boundary digest, Step 1 — Commit 1 (chore): test-suite disk retention + UB-25, Step 2 — Commit 2: T2.1 / UB-09 — honest timing, Step 3 — Commit 3: T2.2 / UB-11 — one metric authority, Step 4 — Deliverable for the human: `docs/phase1_realdata_checklist.md` (+2 more)
 
 ### Community 47 - "ThermalFaceDataset"
-Cohesion: 0.11
-Nodes (19): create_single_fold_loader(), load_split_metadata(), DataFrame, DataLoader, Dataset, Unified Data Loading Module - Multi-Directory Support ==========================, Convert raw thermal sensor value to degrees Celsius.      Defined at module leve, Unified PyTorch Dataset reading from offline preprocessed arrays (+11 more)
+Cohesion: 0.13
+Nodes (17): Config, load_test_metadata(), DataFrame, Unified Data Loading Module - Multi-Directory Support ==========================, Initialize and validate paths                  Args:             output_dir: Ove, Validate required data paths exist, Create output directories if they don't exist, Convert raw thermal sensor value to degrees Celsius.      Defined at module leve (+9 more)
 
 ### Community 48 - "Session 0 — Build the safety net (Phase 0 of CLAUDE.md)"
 Cohesion: 0.29
@@ -261,8 +261,8 @@ Cohesion: 0.33
 Nodes (5): For /graphify explain, For /graphify path, graphify reference: query, path, explain, Step 0 — Constrained query expansion (REQUIRED before traversal), Step 1 — Traversal
 
 ### Community 50 - "DiceLoss"
-Cohesion: 0.20
-Nodes (6): ndarray, Load thermal image from TIFF file, Get the actual TIFF path for a given sample ID, handling variations, Load thermal image for a given sample ID                  Args:             samp, Crop thermal image to bounding box region.          Returns:             ``(crop, Create segmentation mask from polygon annotations
+Cohesion: 0.22
+Nodes (8): End-of-session report — same format, plus:, Session 7 — T2.3 (UB-10) + T2.4 (M1): fixed-batch VRAM probe & held-out test subjects, Standing guardrails, Step 0 — SESSION ENTRY PROTOCOL (§10), Step 1 — Commit 1: T2.3 / UB-10 — fixed-batch-size VRAM probe, Step 2 — Commit 2: T2.4 / M1 — held-out test subjects, CV vs TEST report, Step 3 — Docs, Step 4 — Suite budget + push & CI
 
 ### Community 51 - "graphify reference: add a URL and watch a folder"
 Cohesion: 0.50
@@ -289,23 +289,23 @@ Cohesion: 0.22
 Nodes (8): End-of-session report — same format, plus:, Session 3 — T1.3 (UB-05) + T1.4 (UB-03/04): batch-size contract & fold-count guard, Standing guardrails, Step 0 — PREDECESSOR VERIFICATION GATE (mandatory, before any work), Step 1 — Commit 1: T1.3 / UB-05 — canonical batch-size keys, hard lookup, Step 2 — Commit 2: T1.4 / UB-03+UB-04 — fold-count guard & split-semantics docs, Step 3 — Docs commit (or fold into Step 2's): ledger flips, Session Entry Protocol added to §10, §2 "Current state" updated (partial-corpus crash resolved; remaining Phase-1 items: UB-08, UB-07, UB-06, UB-13/14)., Step 4 — Push & remote CI
 
 ### Community 61 - "detect_and_optimize"
-Cohesion: 0.33
-Nodes (5): detect_and_optimize(), Main function to detect hardware and return optimized profile      Args:, Initialize pipeline          Args:             models_to_train: List of model na, Set global seeds for reproducibility., seed_everything()
+Cohesion: 0.16
+Nodes (12): apply_epochs_override(), main(), Path, Main Training Pipeline Orchestrator =================================== Manages, Point ``outputs/latest`` at this run's output dir (UB-06).          The replacem, Export ``--epochs`` to the ``NUM_EPOCHS`` env var Config reads (UB-13).      Exp, Main entry point with global error catcher for crash-safe operation., Persist *text* to a timestamped error log and return its path.      Single autho (+4 more)
 
 ## Knowledge Gaps
-- **200 isolated node(s):** `UBENCH_RUN_ID`, `graphify`, `Usage`, `What graphify is for`, `Step 0 - GitHub repos and multi-path merge (only if a URL or several paths)` (+195 more)
+- **214 isolated node(s):** `UBENCH_RUN_ID`, `graphify`, `Usage`, `What graphify is for`, `Step 0 - GitHub repos and multi-path merge (only if a URL or several paths)` (+209 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **7 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `UBench README (User Documentation)` connect `unified_data.py` to `UBench — Thermal Face Detection Benchmark Pipeline`, `hardware_detector.py`, `Data Extraction & LFS`, `ThermalFaceDataset`?**
-  _High betweenness centrality (0.089) - this node is a cross-community bridge._
-- **Why does `Config` connect `Config` to `Benchmark & Orchestration Layer`, `test_suite.py`, `unified_data.py`, `test_preprocess_offsets.py`, `Pipeline Stages (main_pipeline)`, `NaN Debug Scripts (Ad-hoc)`, `Multi-Dataset Data Loading`, `ModelBenchmark Runner`, `HardwareProfile`, `ThermalFaceDataset`, `Loss Functions (Dice/Combined)`, `detect_and_optimize`?**
-  _High betweenness centrality (0.063) - this node is a cross-community bridge._
-- **Why does `UnifiedTrainer` connect `Benchmark & Orchestration Layer` to `Config`, `unified_data.py`, `Pipeline Stages (main_pipeline)`, `Model Registry & Swin-UNet++`?**
-  _High betweenness centrality (0.063) - this node is a cross-community bridge._
+- **Why does `UBench README (User Documentation)` connect `unified_data.py` to `UBench — Thermal Face Detection Benchmark Pipeline`, `hardware_detector.py`, `Data Extraction & LFS`, `ThermalFaceDataset`, `detect_and_optimize`?**
+  _High betweenness centrality (0.086) - this node is a cross-community bridge._
+- **Why does `Config` connect `ThermalFaceDataset` to `Training Loop Internals`, `test_batch_size_keys.py`, `swin_unet_plus_plus.py`, `Config`, `unified_data.py`, `NaN Debug Scripts (Ad-hoc)`, `Pipeline Stages (main_pipeline)`, `test_preprocess_offsets.py`, `Multi-Dataset Data Loading`, `ModelBenchmark Runner`, `Loss Functions (Dice/Combined)`, `detect_and_optimize`?**
+  _High betweenness centrality (0.066) - this node is a cross-community bridge._
+- **Why does `UnifiedTrainer` connect `Training Loop Internals` to `Benchmark & Orchestration Layer`, `unified_data.py`, `Pipeline Stages (main_pipeline)`, `ThermalFaceDataset`, `detect_and_optimize`?**
+  _High betweenness centrality (0.057) - this node is a cross-community bridge._
 - **Are the 6 inferred relationships involving `Config` (e.g. with `ModelBenchmark` and `Pipeline`) actually correct?**
   _`Config` has 6 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 6 inferred relationships involving `UnifiedTrainer` (e.g. with `Pipeline` and `_FakeImages`) actually correct?**
@@ -313,4 +313,4 @@ _Questions this graph is uniquely positioned to answer:_
 - **Are the 5 inferred relationships involving `Pipeline` (e.g. with `HardwareProfile` and `TeeLogger`) actually correct?**
   _`Pipeline` has 5 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `UBENCH_RUN_ID`, `graphify`, `Usage` to the rest of the system?**
-  _200 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _214 weakly-connected nodes found - possible documentation gaps or missing edges._
