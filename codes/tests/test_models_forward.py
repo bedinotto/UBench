@@ -104,7 +104,12 @@ def test_resolve_pretrained_env(monkeypatch) -> None:
 def test_single_train_step(key: str, tmp_path) -> None:
     from types import SimpleNamespace
 
-    from codes.config_schema import LossConfig, OptimizerConfig, SchedulerConfig
+    from codes.config_schema import (
+        LossConfig,
+        OptimizerConfig,
+        RecipesConfig,
+        SchedulerConfig,
+    )
     from codes.unified_training import UnifiedTrainer
 
     model = build_model(key)
@@ -115,6 +120,7 @@ def test_single_train_step(key: str, tmp_path) -> None:
         LOSS=LossConfig(),
         OPTIMIZER=OptimizerConfig(),
         SCHEDULER=SchedulerConfig(),
+        RECIPES=RecipesConfig(),
     )
     x = torch.randn(1, 1, 256, 256)
     y = torch.randint(0, 10, (1, 256, 256))

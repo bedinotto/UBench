@@ -20,6 +20,7 @@ import yaml
 from codes.config_schema import (
     LossConfig,
     OptimizerConfig,
+    RecipesConfig,
     RootConfig,
     SchedulerConfig,
     load_config,
@@ -129,6 +130,9 @@ def _make_trainer(tmp_path, *, loss=None, optimizer=None, scheduler=None):
         LOSS=loss or LossConfig(),
         OPTIMIZER=optimizer or OptimizerConfig(),
         SCHEDULER=scheduler or SchedulerConfig(),
+        # Empty recipes => model_key unmapped => the global OPTIMIZER/SCHEDULER
+        # above are used verbatim (T3.3 resolve_recipe default).
+        RECIPES=RecipesConfig(),
     )
     model = nn.Conv2d(1, 10, kernel_size=1)
     # len() is all __init__ needs from the loaders (class_weights default=None

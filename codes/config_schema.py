@@ -17,7 +17,7 @@ every key defined here is consumed somewhere — there are no dead keys.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
@@ -89,28 +89,80 @@ class LossConfig(_Strict):
 
 
 class OptimizerConfig(_Strict):
-    """Optimizer recipe (``optimizer:`` section).
+    """Optimizer recipe (``optimizer:`` section or a per-family override).
 
-    Shaped so T3.3 can extend it with per-family recipes (e.g. AdamW + warmup
-    for transformers); only ``adam`` is wired today and the trainer raises on
-    any other ``name``.
+    ``name`` is one of ``adam`` / ``adamw`` (the trainer hard-raises on any
+    other name, R4). ``grad_clip_norm`` is declared here (T3.3/M4) rather than
+    hardcoded in the trainer so each family can set its own clip.
     """
 
     name: str = "adam"
     weight_decay: float = 0.0
     betas: Tuple[float, float] = (0.9, 0.999)
+    grad_clip_norm: float = 1.0
 
 
 class SchedulerConfig(_Strict):
-    """LR scheduler recipe (``scheduler:`` section).
+    """LR scheduler recipe (``scheduler:`` section or a per-family override).
 
-    Only ``reduce_on_plateau`` is wired today; cosine/warmup arrive with T3.3
-    and the trainer raises on any other ``name``.
+    ``name`` is one of ``reduce_on_plateau`` (uses ``patience``/``factor``,
+    stepped once per epoch with the val metric) or ``warmup_cosine`` (uses
+    ``warmup_frac``, stepped once per optimizer step). The trainer hard-raises
+    on any other name (R4).
     """
 
     name: str = "reduce_on_plateau"
     patience: int = 5
     factor: float = 0.5
+    warmup_frac: float = 0.05
+
+
+class FamilyRecipe(_Strict):
+    """Per-family optimizer/scheduler override (``recipes.families.<name>``).
+
+    A ``None`` field inherits the global ``optimizer`` / ``scheduler`` recipe,
+    so a family can override just one of the two.
+    """
+
+    optimizer: Optional[OptimizerConfig] = None
+    scheduler: Optional[SchedulerConfig] = None
+
+
+class RecipesConfig(_Strict):
+    """Per-family recipe assignments (``recipes:`` section, T3.3/UB-18/M4).
+
+    ``model_families`` maps a registered model key to a family name; a model
+    not listed inherits the global ``optimizer``/``scheduler``. ``families``
+    defines each family's override. The default (both empty) reproduces the
+    single global recipe (pre-T3.3 behavior).
+    """
+
+    model_families: Dict[str, str] = {}
+    families: Dict[str, FamilyRecipe] = {}
+
+
+def resolve_recipe(default_optimizer: OptimizerConfig,
+                   default_scheduler: SchedulerConfig,
+                   recipes: RecipesConfig,
+                   model_key: str) -> Tuple[OptimizerConfig, SchedulerConfig]:
+    """Resolve the effective (optimizer, scheduler) recipe for a model (M4).
+
+    An unmapped model key uses the global defaults (pre-T3.3 behavior). A key
+    mapped to an unknown family is a hard error (R4 — catches typos) rather
+    than a silent fallback.
+    """
+    family = recipes.model_families.get(model_key)
+    if family is None:
+        return default_optimizer, default_scheduler
+    if family not in recipes.families:
+        raise ValueError(
+            f"model '{model_key}' is assigned to unknown family '{family}'; "
+            f"known families: {sorted(recipes.families)}"
+        )
+    recipe = recipes.families[family]
+    optimizer = recipe.optimizer if recipe.optimizer is not None else default_optimizer
+    scheduler = recipe.scheduler if recipe.scheduler is not None else default_scheduler
+    return optimizer, scheduler
 
 
 _DEFAULT_REGIONS: List[str] = [
@@ -141,6 +193,7 @@ class RootConfig(_Strict):
     loss: LossConfig = LossConfig()
     optimizer: OptimizerConfig = OptimizerConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
+    recipes: RecipesConfig = RecipesConfig()
     regions: List[str] = _DEFAULT_REGIONS
 
 

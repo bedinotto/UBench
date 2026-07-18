@@ -21,10 +21,12 @@ try:
     from codes.unified_data import Config
     from codes.naming import checkpoint_path, epoch_checkpoint_glob
     from codes.metrics import SegmentationMetrics
+    from codes.config_schema import resolve_recipe
 except ImportError:
     from unified_data import Config
     from naming import checkpoint_path, epoch_checkpoint_glob
     from metrics import SegmentationMetrics
+    from config_schema import resolve_recipe
 
 
 def _safe_filename(name: str) -> str:
@@ -177,6 +179,31 @@ def resolve_class_weights(spec, num_classes: int, *,
     return weights.to(device) if device is not None else weights
 
 
+def warmup_cosine_split(total_steps: int, warmup_frac: float) -> Tuple[int, int]:
+    """Split total optimizer steps into ``(warmup_steps, cosine_steps)`` (M4).
+
+    Guards the degenerate tiny-run case that the smoke exercises: on a few
+    batches × 1 epoch, ``int(warmup_frac * total_steps)`` is 0, which would make
+    a zero-length ``LinearLR`` milestone and crash. This clamps warmup to at
+    least 1 and leaves at least 1 cosine step.
+
+    Args:
+        total_steps: ``len(train_loader) * num_epochs`` (>= 2 required).
+        warmup_frac: fraction of total steps spent warming up (e.g. 0.05).
+
+    Raises:
+        ValueError: if ``total_steps < 2`` (a warmup+cosine schedule is
+            meaningless with fewer than one step of each).
+    """
+    if total_steps < 2:
+        raise ValueError(
+            f"warmup_cosine needs >=2 optimizer steps, got {total_steps}."
+        )
+    warmup = max(1, int(warmup_frac * total_steps))
+    warmup = min(warmup, total_steps - 1)  # leave >=1 cosine step
+    return warmup, total_steps - warmup
+
+
 class UnifiedTrainer:
     """
     Unified training pipeline for all models
@@ -243,27 +270,20 @@ class UnifiedTrainer:
             class_weights=class_weights,
         )
 
-        # Only the currently-validated recipes are wired; anything else is a
-        # hard error rather than a silent fallback (R4). T3.3 adds AdamW +
-        # warmup/cosine per model family.
-        if opt_cfg.name != "adam":
-            raise ValueError(
-                f"Unsupported optimizer.name='{opt_cfg.name}'. Only 'adam' is "
-                f"wired today; per-family recipes arrive in T3.3."
-            )
-        self.optimizer = torch.optim.Adam(
-            model.parameters(), lr=learning_rate,
-            betas=tuple(opt_cfg.betas), weight_decay=opt_cfg.weight_decay,
+        # Per-family recipe (T3.3/UB-18/M4): resolve the effective optimizer +
+        # scheduler for this model_key. An unmapped key uses the global default
+        # (unchanged from T3.1); the transformer family gets AdamW + warmup→
+        # cosine while CNNs keep Adam + plateau. Identical hyperparameters are
+        # not fair across architecture families (M4).
+        opt_cfg, sch_cfg = resolve_recipe(
+            config.OPTIMIZER, config.SCHEDULER, config.RECIPES, model_key,
         )
-        if sch_cfg.name != "reduce_on_plateau":
-            raise ValueError(
-                f"Unsupported scheduler.name='{sch_cfg.name}'. Only "
-                f"'reduce_on_plateau' is wired today; cosine/warmup arrive in T3.3."
-            )
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min',
-            patience=sch_cfg.patience, factor=sch_cfg.factor,
-        )
+        # grad-clip is recipe-declared (M4), not a hardcoded literal.
+        self.grad_clip_norm = opt_cfg.grad_clip_norm
+        self._optimizer_name = opt_cfg.name.lower()
+        self._scheduler_name = sch_cfg.name.lower()
+        self.optimizer = self._build_optimizer(opt_cfg, learning_rate)
+        self.scheduler, self._scheduler_per_batch = self._build_lr_scheduler(sch_cfg)
         
         # Validation metrics go through the single shared authority (UB-11/R5):
         # hard IoU + hard Dice on argmax, macro excluding classes absent from
@@ -306,7 +326,9 @@ class UnifiedTrainer:
         print(f"Val Batches: {len(val_loader)}")
         print(f"Epochs: {num_epochs}")
         print(f"Learning Rate: {learning_rate}")
-        print(f"Gradient Clip Norm: {grad_clip_norm}")
+        print(f"Optimizer:       {self._optimizer_name}")
+        print(f"Scheduler:       {self._scheduler_name}")
+        print(f"Gradient Clip Norm: {self.grad_clip_norm}")
         print(f"Checkpoint Dir: {self._checkpoint_dir}")
         amp_status = "enabled" if self.scaler is not None else "disabled (GTX/CPU)"
         print(f"AMP (fp16):      {amp_status}")
@@ -340,6 +362,73 @@ class UnifiedTrainer:
             return None
 
         return torch.cuda.amp.GradScaler()
+
+    # ------------------------------------------------------------------
+    # Per-family optimizer / scheduler builders (T3.3/M4)
+    # ------------------------------------------------------------------
+
+    def _build_optimizer(self, opt_cfg, learning_rate: float):
+        """Construct the optimizer from a resolved recipe (adam | adamw)."""
+        common = dict(lr=learning_rate, betas=tuple(opt_cfg.betas),
+                      weight_decay=opt_cfg.weight_decay)
+        name = opt_cfg.name.lower()
+        if name == "adam":
+            return torch.optim.Adam(self.model.parameters(), **common)
+        if name == "adamw":
+            return torch.optim.AdamW(self.model.parameters(), **common)
+        raise ValueError(
+            f"Unsupported optimizer.name='{opt_cfg.name}'. Wired: 'adam', 'adamw'."
+        )
+
+    def _build_lr_scheduler(self, sch_cfg):
+        """Construct the LR scheduler from a resolved recipe.
+
+        Returns ``(scheduler, step_per_batch)``. The stepping *cadence* differs
+        by kind and getting it wrong is silent (▲A): ``reduce_on_plateau`` is
+        stepped once per epoch **with** the val metric; ``warmup_cosine`` is
+        stepped once per optimizer step **without** an argument (a positional
+        arg to a stdlib scheduler is read as an epoch index, which would corrupt
+        the LR curve without error). The trainer honours the returned flag.
+        """
+        name = sch_cfg.name.lower()
+        if name == "reduce_on_plateau":
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min',
+                patience=sch_cfg.patience, factor=sch_cfg.factor,
+            )
+            return scheduler, False
+        if name == "warmup_cosine":
+            total_steps = len(self.train_loader) * self.num_epochs
+            warmup_steps, cosine_steps = warmup_cosine_split(
+                total_steps, sch_cfg.warmup_frac,
+            )
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                self.optimizer, start_factor=0.01, end_factor=1.0,
+                total_iters=warmup_steps,
+            )
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=cosine_steps,
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                self.optimizer, schedulers=[warmup, cosine],
+                milestones=[warmup_steps],
+            )
+            return scheduler, True
+        raise ValueError(
+            f"Unsupported scheduler.name='{sch_cfg.name}'. "
+            f"Wired: 'reduce_on_plateau', 'warmup_cosine'."
+        )
+
+    def _step_scheduler_per_batch(self) -> None:
+        """Advance a per-batch scheduler (warmup_cosine) after an optimizer step.
+
+        No-op for per-epoch schedulers (plateau), which step in ``train()`` with
+        the validation metric. Called only after a real optimizer step (NaN
+        batches ``continue`` before reaching here), so warmup/cosine progress
+        tracks actual updates.
+        """
+        if self._scheduler_per_batch:
+            self.scheduler.step()
 
     # ------------------------------------------------------------------
     # Checkpoint helpers
@@ -512,6 +601,7 @@ class UnifiedTrainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                self._step_scheduler_per_batch()
             else:
                 outputs = self.model(images)
                 loss = self.criterion(outputs, masks)
@@ -544,7 +634,8 @@ class UnifiedTrainer:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
-            
+                self._step_scheduler_per_batch()
+
             total_loss += loss.item()
             valid_batches += 1
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
@@ -642,8 +733,11 @@ class UnifiedTrainer:
             print(f"  Val mIoU:       {val_iou:.4f}")
             print(f"  Val Dice:       {val_dice:.4f}")
 
-            # Learning rate scheduling
-            self.scheduler.step(val_loss)
+            # Learning rate scheduling. Plateau steps once per epoch on the val
+            # metric; warmup_cosine already stepped per optimizer step inside
+            # train_epoch (▲A — never step it here, and never with an argument).
+            if not self._scheduler_per_batch:
+                self.scheduler.step(val_loss)
             current_lr = self.optimizer.param_groups[0]['lr']
             print(f"  Learning Rate:  {current_lr:.6f}")
 

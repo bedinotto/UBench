@@ -37,21 +37,53 @@ loss:
   # explicit list of `num_classes` floats.
   class_weights: null
 
-# Optimizer. Defaults reproduce the previously-hardcoded
-# Adam(lr=training.learning_rate, betas=(0.9, 0.999), weight_decay=0).
-# Only `adam` is wired today; per-family recipes (AdamW + warmup) land in T3.3.
+# Global (default) optimizer recipe. Adam(lr=training.learning_rate,
+# betas=(0.9, 0.999), weight_decay=0, grad-clip 1.0). Used by any model not
+# assigned to a family below. Accepted names: adam | adamw.
 optimizer:
   name: adam
   weight_decay: 0.0
   betas: [0.9, 0.999]
+  grad_clip_norm: 1.0
 
-# LR scheduler. Defaults reproduce the previously-hardcoded
-# ReduceLROnPlateau(mode='min', patience=5, factor=0.5).
-# Only `reduce_on_plateau` is wired today; cosine/warmup land in T3.3.
+# Global (default) LR scheduler. ReduceLROnPlateau(mode='min', patience=5,
+# factor=0.5), stepped once per epoch on the val metric. Accepted names:
+# reduce_on_plateau | warmup_cosine (warmup_frac, stepped per optimizer step).
 scheduler:
   name: reduce_on_plateau
   patience: 5
   factor: 0.5
+  warmup_frac: 0.05
+
+# Per-family optimizer/scheduler recipes (T3.3/UB-18/M4). Identical
+# hyperparameters are not fair across architecture families: CNNs keep
+# Adam + plateau; transformer-family models (incl. the pretrained encoders)
+# use AdamW + linear-warmup→cosine. `model_families` assigns each registered
+# model key to a family; `families` defines each family's override (a null
+# optimizer/scheduler inherits the global recipe above). A model not listed
+# inherits the global recipe; a family name not in `families` is a hard error.
+recipes:
+  model_families:
+    unet: cnn
+    transunet: transformer
+    swin_unet_plus_plus: transformer
+    swin_pretrained: transformer
+    transunet_pretrained: transformer
+  families:
+    # CNN family == the global recipe (declared explicitly for discoverability).
+    cnn:
+      optimizer: null
+      scheduler: null
+    # Transformers want decoupled weight decay + a warmup then cosine decay.
+    transformer:
+      optimizer:
+        name: adamw
+        weight_decay: 0.05
+        betas: [0.9, 0.999]
+        grad_clip_norm: 1.0
+      scheduler:
+        name: warmup_cosine
+        warmup_frac: 0.05
 
 regions:
   - "background"

@@ -117,6 +117,8 @@ class Config:
     LOSS = _validated.loss
     OPTIMIZER = _validated.optimizer
     SCHEDULER = _validated.scheduler
+    # Per-family optimizer/scheduler recipe overrides (T3.3/M4).
+    RECIPES = _validated.recipes
 
     # Thermal conversion
     RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
