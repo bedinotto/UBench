@@ -198,7 +198,6 @@ BENCHMARKING
 UBench/
 ├── run.sh                         # Linux/Mac pipeline entry point
 ├── run.bat                        # Windows pipeline entry point
-├── config.yaml                    # Global training/hardware configuration
 ├── README.md                      # Consolidated project documentation
 │
 ├── requirements/
@@ -206,6 +205,8 @@ UBench/
 │   └── <YourDataset>.zip          # Place dataset archives here
 │
 ├── codes/                         # All Python source code
+│   ├── config.yaml                # THE config (single validated authority)
+│   ├── config_schema.py           # Typed pydantic schema (rejects unknown keys)
 │   ├── main_pipeline.py           # Primary orchestrator
 │   ├── setup.py                   # Dependency builder & environment validator
 │   ├── extract_data.py            # ZIP extractor & annotation generator
@@ -335,7 +336,7 @@ Both `run.bat` and `run.sh` accept the following flags:
 | `--skip-setup` | Skip environment setup and package installation. Use after the first run. |
 | `--models <name> [<name>...]` | Train only specific models. Choices: `unet`, `transunet`, `swin`. |
 | `--skip-benchmark` | Skip the benchmarking step after training. |
-| `--epochs N` | Override `config.yaml` and train for `N` epochs. |
+| `--epochs N` | Override `codes/config.yaml` and train for `N` epochs. |
 | `--resume RUN_ID` | Reuse `outputs/<RUN_ID>` and `logs/<RUN_ID>` from a previous run and continue from its checkpoints. |
 | `-h`, `--help` | Show help. |
 
@@ -348,20 +349,20 @@ Both `run.bat` and `run.sh` accept the following flags:
 ./run.sh --skip-extract --models transunet swin
 ```
 
-### Global Configuration (`config.yaml`)
-Modify `config.yaml` in the root directory to fine-tune operations:
-| Section | Description |
-|---------|-------------|
-| `data` | Directories, image dimensions (`256×256`), and classes (`10`). |
-| `training` | Epochs, batch size optimization limits, learning rates, split k-folds. |
-| `loss` | Weight factors for CE + Dice losses, dice smoothing constants. |
-| `optimizer` | Adam optimizer settings (beta values, weight decay, eps). |
-| `scheduler` | ReduceLROnPlateau lr patience, decay factors, and mins. |
-| `augmentation` | Horizontal flips, brightness adjustments, and rotations. |
-| `benchmark` | Enabling benchmarks, inference test sample sizes. |
-| `visualization` | Colors, heatmaps, resolution DPI, and comparison curves. |
-| `hardware` | Constraints on VRAM, system RAM, and CPU core counts. |
-| `advanced` | AMP config, cuDNN optimizations, memory layouts, gradient clipping. |
+### Global Configuration (`codes/config.yaml`)
+`codes/config.yaml` is the **single** configuration file. It is validated by a typed schema (`codes/config_schema.py`) when the pipeline starts, so an **unknown key or wrong-typed value raises immediately** instead of being silently ignored — every key below is actually consumed.
+
+| Section | Keys | Description |
+|---------|------|-------------|
+| `paths` | `data_dir`, `processed_dir`, `output_dir`, `log_dir` | Filesystem roots (strict layout). |
+| `model` | `image_size` (`256×256`), `num_classes` (`10`) | Model-shape parameters. |
+| `training` | `learning_rate`, `num_epochs`, `k_folds`, `random_seed`, `deterministic`, `test_subjects` | Training / cross-validation and reproducibility. |
+| `loss` | `ce_weight`, `dice_weight`, `class_weights` | Combined CE+Dice weights; `class_weights` = `null` (uniform, default) / `"balanced"` (inverse train-fold frequency, opt-in) / explicit per-class list. |
+| `optimizer` | `name` (`adam`), `weight_decay`, `betas` | Optimizer recipe (only `adam` is wired today). |
+| `scheduler` | `name` (`reduce_on_plateau`), `patience`, `factor` | LR scheduler (only `reduce_on_plateau` is wired today). |
+| `regions` | list of 10 class names | Portuguese facial-region labels (index 0 = background). |
+
+**Not in config (by design):** batch size, workers, device, and AMP are chosen automatically by `hardware_detector` (there is no batch-size override key — that authority is deliberately single). The data-augmentation pipeline is currently hardcoded and moves to config in a later step (T3.4). Env-var overrides remain: `NUM_EPOCHS`, `K_FOLDS`, `TEST_SUBJECTS`, `UBENCH_DETERMINISTIC`.
 
 ---
 
