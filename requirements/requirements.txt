@@ -28,6 +28,7 @@ seaborn>=0.12.0
 
 # Configuration
 PyYAML>=6.0
+pydantic>=2  # typed, fail-on-unknown-key schema over codes/config.yaml (UB-12)
 
 # System Utilities
 psutil>=5.9.0

@@ -18,7 +18,11 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import StratifiedKFold, GroupKFold
 import random
-import yaml
+
+try:
+    from codes.config_schema import load_config
+except ImportError:
+    from config_schema import load_config
 
 
 def _raw_to_celsius(raw):
@@ -74,54 +78,45 @@ def seed_worker(worker_id: int):
 
 
 class Config:
-    """Unified configuration for all models"""
-    
-    # We will load defaults from config.yaml if it exists, otherwise use fallbacks.
+    """Unified configuration for all models.
+
+    Loads ``codes/config.yaml`` through the typed pydantic schema in
+    ``codes/config_schema.py`` (UB-12/T3.1): unknown keys and wrong-typed
+    values raise a ``ValueError`` at import time instead of being silently
+    ignored by the old ``dict.get(key, default)`` lookups.
+    """
+
     _yaml_path = Path(__file__).parent / "config.yaml"
-    _cfg_dict = {}
-    if _yaml_path.exists():
-        with open(_yaml_path, "r", encoding="utf-8") as f:
-            _cfg_dict = yaml.safe_load(f)
+    _validated = load_config(_yaml_path)
 
     # Data paths (STRICT structure)
-    DATA_DIR = Path(_cfg_dict.get("paths", {}).get("data_dir", "data"))
-    PROCESSED_DIR = Path(_cfg_dict.get("paths", {}).get("processed_dir", "data/processed"))
-    
+    DATA_DIR = Path(_validated.paths.data_dir)
+    PROCESSED_DIR = Path(_validated.paths.processed_dir)
+
     # Output paths (STRICT structure)
-    OUTPUT_DIR = Path(_cfg_dict.get("paths", {}).get("output_dir", "outputs"))
-    LOG_DIR = Path(_cfg_dict.get("paths", {}).get("log_dir", "logs"))
-    
+    OUTPUT_DIR = Path(_validated.paths.output_dir)
+    LOG_DIR = Path(_validated.paths.log_dir)
+
     # Model parameters
-    IMAGE_SIZE = tuple(_cfg_dict.get("model", {}).get("image_size", [256, 256]))
-    NUM_CLASSES = _cfg_dict.get("model", {}).get("num_classes", 10)
-    LEARNING_RATE = float(_cfg_dict.get("training", {}).get("learning_rate", 1e-4))
-    NUM_EPOCHS = _cfg_dict.get("training", {}).get("num_epochs", 100)
-    K_FOLDS = _cfg_dict.get("training", {}).get("k_folds", 5)
-    RANDOM_SEED = _cfg_dict.get("training", {}).get("random_seed", 42)
+    IMAGE_SIZE = tuple(_validated.model.image_size)
+    NUM_CLASSES = _validated.model.num_classes
+    LEARNING_RATE = float(_validated.training.learning_rate)
+    NUM_EPOCHS = _validated.training.num_epochs
+    K_FOLDS = _validated.training.k_folds
+    RANDOM_SEED = _validated.training.random_seed
     # Reproducibility flag (M6): the single owner of the cuDNN determinism/
     # benchmark decision. Overridable via UBENCH_DETERMINISTIC.
-    DETERMINISTIC = bool(_cfg_dict.get("training", {}).get("deterministic", True))
+    DETERMINISTIC = _validated.training.deterministic
     # Subjects held out from all CV folds and evaluated as the TEST set (M1).
     # Default empty (CV only); overridable via the TEST_SUBJECTS env var.
-    TEST_SUBJECTS = list(_cfg_dict.get("training", {}).get("test_subjects", []) or [])
-    
+    TEST_SUBJECTS = list(_validated.training.test_subjects)
+
     # Thermal conversion
     RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
-    
+
     # Region names
-    REGION_NAMES = _cfg_dict.get("regions", [
-        "background",
-        "Contorno inferior do Rosto",
-        "Sombrancelha esquerda",
-        "Sombrancelha direita",
-        "Nariz",
-        "Olho esquerdo",
-        "Olho direito",
-        "Boca",
-        "Labios",
-        "Testa"
-    ])
-    
+    REGION_NAMES = list(_validated.regions)
+
     # Device
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
