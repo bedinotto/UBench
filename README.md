@@ -376,8 +376,9 @@ The two pretrained encoders download ImageNet weights from the timm/HuggingFace 
 | `model` | `image_size` (`256×256`), `num_classes` (`10`) | Model-shape parameters. |
 | `training` | `learning_rate`, `num_epochs`, `k_folds`, `random_seed`, `deterministic`, `test_subjects` | Training / cross-validation and reproducibility. |
 | `loss` | `ce_weight`, `dice_weight`, `class_weights` | Combined CE+Dice weights; `class_weights` = `null` (uniform, default) / `"balanced"` (inverse train-fold frequency, opt-in) / explicit per-class list. |
-| `optimizer` | `name` (`adam`), `weight_decay`, `betas` | Optimizer recipe (only `adam` is wired today). |
-| `scheduler` | `name` (`reduce_on_plateau`), `patience`, `factor` | LR scheduler (only `reduce_on_plateau` is wired today). |
+| `optimizer` | `name` (`adam`\|`adamw`), `weight_decay`, `betas`, `grad_clip_norm` | Global (default) optimizer recipe. |
+| `scheduler` | `name` (`reduce_on_plateau`\|`warmup_cosine`), `patience`, `factor`, `warmup_frac` | Global (default) LR scheduler. |
+| `recipes` | `model_families`, `families` | **Per-family overrides** (M4): each model key maps to a family (CNN or transformer); each family overrides the optimizer/scheduler. Ships with CNN=Adam/plateau, transformer=AdamW+warmup→cosine. |
 | `regions` | list of 10 class names | Portuguese facial-region labels (index 0 = background). |
 
 **Not in config (by design):** batch size, workers, device, and AMP are chosen automatically by `hardware_detector` (there is no batch-size override key — that authority is deliberately single). The data-augmentation pipeline is currently hardcoded and moves to config in a later step (T3.4). Env-var overrides remain: `NUM_EPOCHS`, `K_FOLDS`, `TEST_SUBJECTS`, `UBENCH_DETERMINISTIC`.
