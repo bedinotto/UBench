@@ -30,8 +30,12 @@ def test_detect_returns_cpu_profile_when_opted_in(monkeypatch):
     assert profile.device == "cpu"
     assert profile.num_workers == 0
     # Registry-named keys (UB-05, T1.3); parity with the model registry
-    # is enforced tier-by-tier in test_batch_size_keys.py.
-    assert set(profile.batch_sizes) == {"unet", "transunet", "swin_unet_plus_plus"}
+    # is enforced tier-by-tier in test_batch_size_keys.py. Includes the two
+    # pretrained encoders added in T3.2.
+    assert set(profile.batch_sizes) == {
+        "unet", "transunet", "swin_unet_plus_plus",
+        "swin_pretrained", "transunet_pretrained",
+    }
     assert all(v >= 1 for v in profile.batch_sizes.values())
     # Fields read elsewhere in the pipeline must all be populated.
     assert profile.gpu_name

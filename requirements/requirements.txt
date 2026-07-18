@@ -41,3 +41,8 @@ nvidia-ml-py
 albumentations>=1.4,<2.0
 torchmetrics>=1.0.0
 pytest>=7.4.0
+
+# Pretrained encoders (T3.2, M5): timm provides SwinV2 + R50+ViT-B/16 hybrid
+# and the in_chans=1 stem adaptation. Weight downloads need network; tests and
+# the CPU smoke build with random weights (pretrained=False / UBENCH_PRETRAINED=0).
+timm>=1.0

@@ -22,6 +22,8 @@ from codes.model_registry import get_registered_models
 import codes.unet_v2  # noqa: F401
 import codes.transunet  # noqa: F401
 import codes.swin_unet_plus_plus  # noqa: F401
+import codes.swin_pretrained  # noqa: F401
+import codes.transunet_pretrained  # noqa: F401
 
 
 def _profile(gpu_memory_gb: float, device: str = "cuda") -> HardwareProfile:

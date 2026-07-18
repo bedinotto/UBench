@@ -40,6 +40,8 @@ from codes.model_registry import create_model
 import codes.unet_v2
 import codes.transunet
 import codes.swin_unet_plus_plus
+import codes.swin_pretrained          # T3.2: pretrained SwinV2 encoder (M5)
+import codes.transunet_pretrained     # T3.2: pretrained R50+ViT-B/16 hybrid (M5)
 import codes.benchmark_models as benchmark_models
 
 
@@ -314,9 +316,10 @@ class Pipeline:
             'in_channels': 1,
             'num_classes': self.config.NUM_CLASSES
         }
-        if model_name in ['transunet', 'swin_unet_plus_plus', 'swin']:
+        if model_name in ['transunet', 'swin_unet_plus_plus', 'swin',
+                           'swin_pretrained', 'transunet_pretrained']:
             kwargs['img_size'] = self.config.IMAGE_SIZE[0]
-            
+
         model = create_model(model_name, **kwargs)
         
         # Train
@@ -412,6 +415,12 @@ class Pipeline:
             elif model_name == 'transunet':
                 registry_name = 'transunet'
                 display_name = 'TransUNet'
+            elif model_name == 'swin_pretrained':
+                registry_name = 'swin_pretrained'
+                display_name = 'SwinV2-UNet (ImageNet)'
+            elif model_name == 'transunet_pretrained':
+                registry_name = 'transunet_pretrained'
+                display_name = 'TransUNet (ImageNet)'
             else:
                 registry_name = model_name
                 display_name = model_name
@@ -420,7 +429,8 @@ class Pipeline:
                 'in_channels': 1,
                 'num_classes': self.config.NUM_CLASSES
             }
-            if registry_name in ['transunet', 'swin_unet_plus_plus']:
+            if registry_name in ['transunet', 'swin_unet_plus_plus',
+                                  'swin_pretrained', 'transunet_pretrained']:
                 kwargs['img_size'] = self.config.IMAGE_SIZE[0]
 
             models_dict[display_name] = create_model(registry_name, **kwargs)

@@ -44,28 +44,39 @@ class HardwareProfile:
         do hard ``[key]`` lookups, so every registered model needs an
         entry in every tier.
         """
+        # The two pretrained encoders (T3.2) are heavier than the from-scratch
+        # variants — SwinV2-tiny (~35M) and especially the R50+ViT-B/16 hybrid
+        # (~99M, the heaviest model in the repo) — so their batch sizes are
+        # sized conservatively (transunet_pretrained lowest in every tier).
         if self.device == "cpu":
             # CPU mode (UBENCH_ALLOW_CPU=1) exists for tests/CI, not
             # throughput.
-            return {"unet": 4, "transunet": 2, "swin_unet_plus_plus": 2}
+            return {"unet": 4, "transunet": 2, "swin_unet_plus_plus": 2,
+                    "swin_pretrained": 2, "transunet_pretrained": 2}
         if self.gpu_memory_gb < 5.5:
             print("[WARNING] GPU memory below 6GB - may encounter issues")
-            return {"unet": 4, "transunet": 3, "swin_unet_plus_plus": 3}
+            return {"unet": 4, "transunet": 3, "swin_unet_plus_plus": 3,
+                    "swin_pretrained": 2, "transunet_pretrained": 1}
         elif self.gpu_memory_gb < 7:
             # GTX 1660 Ti baseline (6GB)
-            return {"unet": 8, "transunet": 6, "swin_unet_plus_plus": 6}
+            return {"unet": 8, "transunet": 6, "swin_unet_plus_plus": 6,
+                    "swin_pretrained": 4, "transunet_pretrained": 2}
         elif self.gpu_memory_gb < 11:
             # 8GB cards (RTX 2070, RTX 3060)
-            return {"unet": 12, "transunet": 8, "swin_unet_plus_plus": 8}
+            return {"unet": 12, "transunet": 8, "swin_unet_plus_plus": 8,
+                    "swin_pretrained": 6, "transunet_pretrained": 4}
         elif self.gpu_memory_gb < 16:
             # 12GB cards (RTX 3060 12GB, RTX 4070)
-            return {"unet": 16, "transunet": 12, "swin_unet_plus_plus": 10}
+            return {"unet": 16, "transunet": 12, "swin_unet_plus_plus": 10,
+                    "swin_pretrained": 8, "transunet_pretrained": 6}
         elif self.gpu_memory_gb < 24:
             # 16GB cards (RTX 4060 Ti 16GB)
-            return {"unet": 24, "transunet": 16, "swin_unet_plus_plus": 14}
+            return {"unet": 24, "transunet": 16, "swin_unet_plus_plus": 14,
+                    "swin_pretrained": 12, "transunet_pretrained": 8}
         else:
             # 24GB+ cards (RTX 3090, RTX 4090, A5000)
-            return {"unet": 32, "transunet": 24, "swin_unet_plus_plus": 20}
+            return {"unet": 32, "transunet": 24, "swin_unet_plus_plus": 20,
+                    "swin_pretrained": 16, "transunet_pretrained": 12}
     
     def _calculate_workers(self) -> int:
         """
@@ -133,10 +144,9 @@ class HardwareProfile:
                 f"  GPU: {self.gpu_name} ({self.gpu_memory_gb:.1f} GB)\n"
                 f"  CPU Cores: {self.cpu_count}\n"
                 f"  RAM: {self.ram_gb:.1f} GB\n"
-                f"  Batch Sizes: unet={self.batch_sizes['unet']}, "
-                f"transunet={self.batch_sizes['transunet']}, "
-                f"swin_unet_plus_plus={self.batch_sizes['swin_unet_plus_plus']}\n"
-                f"  Workers: {self.num_workers}")
+                f"  Batch Sizes: "
+                + ", ".join(f"{k}={v}" for k, v in self.batch_sizes.items())
+                + f"\n  Workers: {self.num_workers}")
 
 
 class HardwareDetector:
