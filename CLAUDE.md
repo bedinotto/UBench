@@ -14,6 +14,14 @@ Rules:
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
 
+## Long Tasks section
+
+- For long-running reports (e.g. /insights), work incrementally: save partial output to a file after each major step so progress survives session limits.
+
+## Plugin Management
+
+- When a plugin install fails to reconnect, retry the reconnect once, then report the failure and continue rather than repeatedly retrying.
+
 ## 1. What this is
 
 UBench is a computer vision pipeline for **thermal facial region segmentation** (10 classes: background + 9 facial regions, Portuguese labels). It trains and benchmarks three architectures — **U-Net**, **TransUNet**, and **Swin-UNet++** — under a unified training loop on thermal `.tiff` images (K-fold cross-validation, AMP, hardware-aware batch sizing), then produces comparison reports and plots. All Python source lives in `codes/`; the repo root is kept clean (entry points + config only).
