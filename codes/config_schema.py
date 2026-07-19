@@ -165,6 +165,24 @@ def resolve_recipe(default_optimizer: OptimizerConfig,
     return optimizer, scheduler
 
 
+class AugmentationConfig(_Strict):
+    """Training augmentation (``preprocessing.augmentation:``, T3.4/M7).
+
+    Applied in Celsius before normalization. Geometry (flip/affine) is
+    kept; intensity is a physical additive sensor drift + Gaussian noise
+    (replacing the multiplicative brightness/contrast).
+    """
+
+    flip_prob: float = 0.5
+    affine_prob: float = 0.5
+    translate_frac: float = 0.0625
+    scale_limit: float = 0.1
+    rotate_limit: float = 10.0
+    noise_prob: float = 0.5
+    drift_celsius: float = 0.5
+    noise_sigma_celsius: float = 0.1
+
+
 class PreprocessingConfig(_Strict):
     """Thermal-domain preprocessing (``preprocessing:`` section, T3.4/M7).
 
@@ -180,6 +198,7 @@ class PreprocessingConfig(_Strict):
 
     normalization: str = "fixed_range"
     fixed_range_celsius: Tuple[float, float] = (20.0, 40.0)
+    augmentation: AugmentationConfig = AugmentationConfig()
 
     @field_validator("normalization")
     @classmethod

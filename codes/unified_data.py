@@ -23,10 +23,12 @@ try:
     from codes.config_schema import load_config
     from codes.utils import apply_normalization
     from codes.preprocess_manifest import verify_preprocess_manifest
+    from codes.augmentation import build_thermal_transform
 except ImportError:
     from config_schema import load_config
     from utils import apply_normalization
     from preprocess_manifest import verify_preprocess_manifest
+    from augmentation import build_thermal_transform
 
 
 def _raw_to_celsius(raw):
@@ -432,16 +434,12 @@ class ThermalFaceDataset(Dataset):
         self.config = config
         self.augment = augment
         
-        # Import inside to ensure albumentations is available
-        import albumentations as A
-        
+        # Physical thermal augmentation, built from config (T3.4/M7): flip +
+        # Affine + additive sensor drift/noise, applied in Celsius before
+        # normalization. Single augmentation authority (R5).
         if self.augment:
-            self.transform = A.Compose([
-                A.HorizontalFlip(p=0.5),
-                A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=10, 
-                                   interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, value=0, p=0.5),
-                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5)
-            ])
+            self.transform = build_thermal_transform(
+                config.PREPROCESSING.augmentation, seed=config.RANDOM_SEED)
         else:
             self.transform = None
     
@@ -456,21 +454,22 @@ class ThermalFaceDataset(Dataset):
         mask_path = str(self.config.DATA_DIR.parent / row['mask_path'])
         
         # Load precomputed arrays. The .npy stores resized **Celsius** (T3.4/
-        # design i); normalization to [0,1] is applied here per the configured
-        # mode via the single authority (R5) — not baked at preprocess time.
+        # design i). Augmentation acts on the Celsius array (physical units),
+        # then normalization to [0,1] is applied via the single authority (R5).
         thermal_celsius = np.load(img_path).astype(np.float32)
+        mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED).astype(np.int64)
+
+        if self.transform:
+            augmented = self.transform(image=thermal_celsius, mask=mask)
+            thermal_celsius = augmented['image']
+            mask = augmented['mask']
+
         thermal_img = apply_normalization(
             thermal_celsius,
             self.config.PREPROCESSING.normalization,
             self.config.PREPROCESSING.fixed_range_celsius,
         )
-        mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED).astype(np.int64)
 
-        if self.transform:
-            augmented = self.transform(image=thermal_img, mask=mask)
-            thermal_img = augmented['image']
-            mask = augmented['mask']
-        
         # Convert to tensors
         thermal_img = torch.from_numpy(thermal_img).unsqueeze(0).float()
         mask = torch.from_numpy(mask).long()
