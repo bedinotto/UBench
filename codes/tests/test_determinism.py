@@ -109,9 +109,11 @@ def _cfg_with_metadata(tmp_path, subjects=("S1", "S2", "S3")):
     write_preprocess_manifest(proc, image_size=(256, 256),
                               normalization="fixed_range",
                               fixed_range_celsius=(20.0, 40.0), num_samples=len(rows))
+    from codes.config_schema import PreprocessingConfig
     return SimpleNamespace(
         PROCESSED_DIR=proc, DATA_DIR=tmp_path / "data",
         TEST_SUBJECTS=[], K_FOLDS=2, NUM_CLASSES=10, RANDOM_SEED=42,
+        PREPROCESSING=PreprocessingConfig(),
     )
 
 

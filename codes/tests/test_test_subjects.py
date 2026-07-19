@@ -45,6 +45,7 @@ def _write_metadata(tmp_path, subjects, frames_per: int = 3) -> None:
 
 def _cfg(tmp_path, subjects, test_subjects=(), k_folds: int = 2):
     _write_metadata(tmp_path, subjects)
+    from codes.config_schema import PreprocessingConfig
     return SimpleNamespace(
         PROCESSED_DIR=tmp_path / "processed",
         DATA_DIR=tmp_path / "data",
@@ -52,6 +53,7 @@ def _cfg(tmp_path, subjects, test_subjects=(), k_folds: int = 2):
         K_FOLDS=k_folds,
         NUM_CLASSES=10,
         RANDOM_SEED=42,   # loaders build a seeded generator from this (T2.5)
+        PREPROCESSING=PreprocessingConfig(),
     )
 
 
