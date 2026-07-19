@@ -80,5 +80,9 @@
   "78": "RecipesConfig",
   "79": "Session 12 — T3.4 (UB-19, M7): thermal-domain preprocessing",
   "80": "Session 12 — T3.4 (UB-19, M7): thermal-domain preprocessing",
-  "81": "DoubleConv"
+  "81": "DoubleConv",
+  "82": "_TeeStream",
+  "83": "Session 13 — T3.5 (UB-20b): lockfiles + reproducible install",
+  "84": "._detect_cuda_driver_version",
+  "85": "ubench"
 }
