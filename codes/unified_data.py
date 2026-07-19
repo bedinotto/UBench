@@ -32,13 +32,25 @@ except ImportError:
 
 
 def _raw_to_celsius(raw):
-    """Convert raw thermal sensor value to degrees Celsius.
+    """Convert a single raw thermal sensor value to degrees Celsius.
 
     Defined at module level (not as a lambda) so that it is picklable
     by the 'spawn' multiprocessing context used by DataLoader workers
-    on Windows and when CUDA is active on Linux/Mac.
+    on Windows and when CUDA is active on Linux/Mac. Retained as the scalar
+    reference the vectorized path (:func:`raw_to_celsius`) is tested against.
     """
     return (raw / 100) - 273.15
+
+
+def raw_to_celsius(raw: np.ndarray) -> np.ndarray:
+    """Convert a raw thermal array to °C, array-native (T3.4/UB-19/M7).
+
+    ``(raw / 100) - 273.15`` applied to the whole array in C. Replaces the old
+    ``np.vectorize(_raw_to_celsius)`` — despite the name, ``np.vectorize`` runs
+    a per-pixel **Python** loop (~100× slower on a 640×480 frame). Cast to
+    float32 first to avoid an unnecessary float64 intermediate.
+    """
+    return (raw.astype(np.float32) / 100.0) - 273.15
 
 
 def seed_everything(seed: int = 42, deterministic: bool = True):
@@ -129,7 +141,9 @@ class Config:
     PREPROCESSING = _validated.preprocessing
 
     # Thermal conversion
-    RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
+    # Array-native (vectorized) raw→°C. staticmethod so `config.RAW_TO_CELSIUS`
+    # returns the plain function (a bare function attribute would bind `self`).
+    RAW_TO_CELSIUS = staticmethod(raw_to_celsius)
 
     # Region names
     REGION_NAMES = list(_validated.regions)

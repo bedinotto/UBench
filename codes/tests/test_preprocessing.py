@@ -16,11 +16,14 @@ import cv2
 import numpy as np
 import pytest
 
+import time
+
 from codes.preprocess_manifest import (
     PREPROCESS_VERSION,
     verify_preprocess_manifest,
     write_preprocess_manifest,
 )
+from codes.unified_data import _raw_to_celsius, raw_to_celsius
 from codes.utils import apply_normalization, normalize_fixed_range, normalize_thermal
 
 
@@ -103,3 +106,30 @@ def test_manifest_current_version_ok(tmp_path):
     manifest = verify_preprocess_manifest(tmp_path)
     assert manifest["preprocess_version"] == PREPROCESS_VERSION
     assert manifest["stored_unit"] == "celsius"
+
+
+# --------------------------------------------------------------------------- #
+# Vectorized raw -> Celsius (T3.4): same result as the scalar path, >=100x fast.
+# --------------------------------------------------------------------------- #
+def test_raw_to_celsius_matches_scalar():
+    raw = np.arange(0, 65535, 137, dtype=np.uint16)
+    scalar = np.array([_raw_to_celsius(v) for v in raw], dtype=np.float32)
+    assert np.allclose(raw_to_celsius(raw), scalar, atol=1e-4)
+
+
+def test_raw_to_celsius_at_least_100x_faster_than_vectorize():
+    raw = np.random.default_rng(0).integers(29315, 31316, size=(480, 640),
+                                             dtype=np.uint16)
+    old = np.vectorize(_raw_to_celsius)  # the per-pixel Python loop we replaced
+
+    t0 = time.perf_counter()
+    old(raw)
+    slow = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    for _ in range(10):        # average the fast path (sub-ms) over repeats
+        raw_to_celsius(raw)
+    fast = (time.perf_counter() - t0) / 10
+
+    assert fast > 0
+    assert slow / fast >= 100.0, f"only {slow / fast:.1f}x faster"
