@@ -35,7 +35,7 @@ from codes.unified_training import UnifiedTrainer
 from codes.preprocess_data import preprocess_all_data
 
 # Import model architectures and registry
-from codes.model_registry import create_model
+from codes.model_registry import create_model, get_registered_models
 from codes.config_schema import resolve_recipe
 # Import models to ensure they are registered
 import codes.unet_v2
@@ -43,6 +43,21 @@ import codes.transunet
 import codes.swin_unet_plus_plus
 import codes.swin_pretrained          # T3.2: pretrained SwinV2 encoder (M5)
 import codes.transunet_pretrained     # T3.2: pretrained R50+ViT-B/16 hybrid (M5)
+
+# Short CLI aliases for registry keys — an explicit table next to the registry,
+# not a parallel truth (UB-26). Valid --models choices are the registered keys
+# plus these aliases; the training/benchmark loops resolve an alias to its key.
+_MODEL_ALIASES = {"swin": "swin_unet_plus_plus"}
+
+
+def _resolve_model_key(name: str) -> str:
+    """Map a CLI --models value (registry key or short alias) to a registry key."""
+    return _MODEL_ALIASES.get(name, name)
+
+
+def _model_choices() -> list[str]:
+    """All valid --models values: every registered model key + short aliases."""
+    return sorted(set(get_registered_models()) | set(_MODEL_ALIASES))
 import codes.benchmark_models as benchmark_models
 
 
@@ -377,11 +392,8 @@ class Pipeline:
             
             # Train models based on selection
             for model_name in self.models_to_train:
-                if model_name == 'swin':
-                    registry_name = 'swin_unet_plus_plus'
-                else:
-                    registry_name = model_name
-                    
+                registry_name = _resolve_model_key(model_name)
+
                 try:
                     self.train_model(registry_name, fold_idx)
                 except Exception as e:
@@ -593,9 +605,9 @@ def main():
     parser.add_argument(
         '--models',
         nargs='+',
-        choices=['unet', 'transunet', 'swin'],
+        choices=_model_choices(),
         default=None,
-        help='Models to train (default: all models)'
+        help='Models to train (registry keys + the "swin" alias; default: all)'
     )
     parser.add_argument(
         '--skip-benchmark',
