@@ -13,11 +13,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CPU-only PyTorch
-        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install uv
+        run: pip install uv
 
-      - name: Install project requirements
-        run: pip install -r requirements/requirements.txt ruff pytest
+      # One lock-driven install (UB-20b): the exact pinned closure from the
+      # committed CPU lock — torch/torchvision from the PyTorch CPU index via
+      # --torch-backend, plus ruff+pytest (the dev extra is compiled into the
+      # lock). Replaces the previous two loose `pip install` steps.
+      - name: Install from the CPU lockfile
+        run: uv pip sync requirements/requirements.cpu.lock --torch-backend=cpu --system
 
       - name: Lint
         run: ruff check codes/
