@@ -21,8 +21,12 @@ import random
 
 try:
     from codes.config_schema import load_config
+    from codes.utils import apply_normalization
+    from codes.preprocess_manifest import verify_preprocess_manifest
 except ImportError:
     from config_schema import load_config
+    from utils import apply_normalization
+    from preprocess_manifest import verify_preprocess_manifest
 
 
 def _raw_to_celsius(raw):
@@ -119,6 +123,8 @@ class Config:
     SCHEDULER = _validated.scheduler
     # Per-family optimizer/scheduler recipe overrides (T3.3/M4).
     RECIPES = _validated.recipes
+    # Thermal-domain preprocessing (T3.4/M7): load-time normalization mode+range.
+    PREPROCESSING = _validated.preprocessing
 
     # Thermal conversion
     RAW_TO_CELSIUS = np.vectorize(_raw_to_celsius)
@@ -449,10 +455,17 @@ class ThermalFaceDataset(Dataset):
         img_path = str(self.config.DATA_DIR.parent / row['image_path'])
         mask_path = str(self.config.DATA_DIR.parent / row['mask_path'])
         
-        # Load precomputed arrays
-        thermal_img = np.load(img_path).astype(np.float32)
+        # Load precomputed arrays. The .npy stores resized **Celsius** (T3.4/
+        # design i); normalization to [0,1] is applied here per the configured
+        # mode via the single authority (R5) — not baked at preprocess time.
+        thermal_celsius = np.load(img_path).astype(np.float32)
+        thermal_img = apply_normalization(
+            thermal_celsius,
+            self.config.PREPROCESSING.normalization,
+            self.config.PREPROCESSING.fixed_range_celsius,
+        )
         mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED).astype(np.int64)
-        
+
         if self.transform:
             augmented = self.transform(image=thermal_img, mask=mask)
             thermal_img = augmented['image']
@@ -478,6 +491,10 @@ def _read_all_metadata(config: Config) -> pd.DataFrame:
             f"Preprocessed data not found at {metadata_path}. "
             f"Please run 'python codes/preprocess_data.py' first."
         )
+    # T3.4/M7: the .npy store Celsius and are normalized at load. Reject
+    # data whose schema manifest is missing or a version mismatch (legacy
+    # baked-normalized data would be silently misread as Celsius).
+    verify_preprocess_manifest(config.PROCESSED_DIR)
     df = pd.read_csv(metadata_path)
     if 'LIMIT_SAMPLES' in os.environ:
         df = df.head(int(os.environ['LIMIT_SAMPLES']))

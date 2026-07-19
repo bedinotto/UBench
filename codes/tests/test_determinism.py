@@ -104,6 +104,11 @@ def _cfg_with_metadata(tmp_path, subjects=("S1", "S2", "S3")):
         for s in subjects for i in range(3)
     ]
     pd.DataFrame(rows).to_csv(proc / "metadata.csv", index=False)
+    # T3.4: the load guard requires a current-version manifest next to metadata.
+    from codes.preprocess_manifest import write_preprocess_manifest
+    write_preprocess_manifest(proc, image_size=(256, 256),
+                              normalization="fixed_range",
+                              fixed_range_celsius=(20.0, 40.0), num_samples=len(rows))
     return SimpleNamespace(
         PROCESSED_DIR=proc, DATA_DIR=tmp_path / "data",
         TEST_SUBJECTS=[], K_FOLDS=2, NUM_CLASSES=10, RANDOM_SEED=42,
@@ -124,13 +129,18 @@ def test_real_loaders_carry_generator_and_worker_init(tmp_path) -> None:
 # --------------------------------------------------------------------------- #
 def test_run_metadata_has_provenance_keys() -> None:
     """collect_run_metadata records git/env/seed/config provenance (M6)."""
-    from codes.config_schema import OptimizerConfig, RecipesConfig, SchedulerConfig
+    from codes.config_schema import (
+        OptimizerConfig,
+        PreprocessingConfig,
+        RecipesConfig,
+        SchedulerConfig,
+    )
 
     cfg = SimpleNamespace(
         RANDOM_SEED=42, DETERMINISTIC=True, NUM_EPOCHS=1, K_FOLDS=2,
         TEST_SUBJECTS=["S5"], IMAGE_SIZE=(256, 256), NUM_CLASSES=10,
         OPTIMIZER=OptimizerConfig(), SCHEDULER=SchedulerConfig(),
-        RECIPES=RecipesConfig(),
+        RECIPES=RecipesConfig(), PREPROCESSING=PreprocessingConfig(),
     )
     md = main_pipeline.collect_run_metadata(cfg, "run-x", ["unet"])
     required = {

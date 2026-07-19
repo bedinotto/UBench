@@ -85,6 +85,15 @@ recipes:
         name: warmup_cosine
         warmup_frac: 0.05
 
+# Thermal-domain preprocessing (T3.4/M7). Normalization is applied at LOAD
+# time (the .npy store resized Celsius), so this switch is runtime-pure — no
+# rebuild needed to change it. `fixed_range` preserves absolute temperature
+# (the modality's core signal) by mapping [lo,hi] °C linearly to [0,1];
+# `per_image_minmax` is the legacy per-frame mode (destroys absolute temp).
+preprocessing:
+  normalization: fixed_range
+  fixed_range_celsius: [20.0, 40.0]
+
 regions:
   - "background"
   - "Contorno inferior do Rosto"

@@ -165,6 +165,33 @@ def resolve_recipe(default_optimizer: OptimizerConfig,
     return optimizer, scheduler
 
 
+class PreprocessingConfig(_Strict):
+    """Thermal-domain preprocessing (``preprocessing:`` section, T3.4/M7).
+
+    ``normalization`` maps the stored Celsius array to ``[0, 1]`` at load time
+    (design (i) — the ``.npy`` stores Celsius, so this switch is runtime-pure):
+
+    * ``fixed_range`` (default) — linearly map ``fixed_range_celsius`` → [0,1]
+      (clip outside). Preserves absolute temperature, the modality's core
+      signal (M7), and commutes with resize.
+    * ``per_image_minmax`` — legacy per-frame min–max. Destroys absolute
+      temperature and does **not** commute with resize.
+    """
+
+    normalization: str = "fixed_range"
+    fixed_range_celsius: Tuple[float, float] = (20.0, 40.0)
+
+    @field_validator("normalization")
+    @classmethod
+    def _valid_normalization(cls, value):
+        if value not in ("fixed_range", "per_image_minmax"):
+            raise ValueError(
+                "preprocessing.normalization must be 'fixed_range' or "
+                "'per_image_minmax'"
+            )
+        return value
+
+
 _DEFAULT_REGIONS: List[str] = [
     "background",
     "Contorno inferior do Rosto",
@@ -194,6 +221,7 @@ class RootConfig(_Strict):
     optimizer: OptimizerConfig = OptimizerConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     recipes: RecipesConfig = RecipesConfig()
+    preprocessing: PreprocessingConfig = PreprocessingConfig()
     regions: List[str] = _DEFAULT_REGIONS
 
 

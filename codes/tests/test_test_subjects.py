@@ -36,6 +36,11 @@ def _write_metadata(tmp_path, subjects, frames_per: int = 3) -> None:
                 "mask_path": f"data/processed/masks/{s}_{i}.png",
             })
     pd.DataFrame(rows).to_csv(proc / "metadata.csv", index=False)
+    # T3.4: the load guard requires a current-version manifest next to metadata.
+    from codes.preprocess_manifest import write_preprocess_manifest
+    write_preprocess_manifest(proc, image_size=(256, 256),
+                              normalization="fixed_range",
+                              fixed_range_celsius=(20.0, 40.0), num_samples=len(rows))
 
 
 def _cfg(tmp_path, subjects, test_subjects=(), k_folds: int = 2):

@@ -105,6 +105,12 @@ def collect_run_metadata(config, run_id: str, models_to_train: list[str]) -> dic
         "deterministic": config.DETERMINISTIC,
         "models_to_train": list(models_to_train),
         "recipes": recipes,
+        # Normalization mode + range (T3.4/M9) — it changes what the model
+        # (and the pretrained stems) see, so a run must record it.
+        "preprocessing": {
+            "normalization": config.PREPROCESSING.normalization,
+            "fixed_range_celsius": list(config.PREPROCESSING.fixed_range_celsius),
+        },
         "num_epochs": config.NUM_EPOCHS,
         "k_folds": config.K_FOLDS,
         "test_subjects": list(config.TEST_SUBJECTS),

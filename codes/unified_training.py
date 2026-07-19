@@ -22,11 +22,13 @@ try:
     from codes.naming import checkpoint_path, epoch_checkpoint_glob
     from codes.metrics import SegmentationMetrics
     from codes.config_schema import resolve_recipe
+    from codes.utils import apply_normalization
 except ImportError:
     from unified_data import Config
     from naming import checkpoint_path, epoch_checkpoint_glob
     from metrics import SegmentationMetrics
     from config_schema import resolve_recipe
+    from utils import apply_normalization
 
 
 def _safe_filename(name: str) -> str:
@@ -894,17 +896,16 @@ class ThermalFaceDetector:
         self.model.eval()
 
     def normalize_thermal(self, thermal_img: np.ndarray) -> np.ndarray:
-        """Normalize thermal image to [0, 1] range.
+        """Normalize via the single shared authority (R5/T3.4).
 
-        A flat image (min == max) normalizes to all-zeros, not the raw values —
-        returning the un-normalized image would leak out-of-range magnitudes
-        into a supposedly [0, 1] tensor (UB-15).
+        Routes to :func:`codes.utils.apply_normalization` so the inference path
+        normalizes identically to training (same config mode + range).
         """
-        min_val = thermal_img.min()
-        max_val = thermal_img.max()
-        if max_val - min_val > 0:
-            return (thermal_img - min_val) / (max_val - min_val)
-        return np.zeros_like(thermal_img, dtype=np.float32)
+        return apply_normalization(
+            thermal_img,
+            self.config.PREPROCESSING.normalization,
+            self.config.PREPROCESSING.fixed_range_celsius,
+        )
 
     def predict(self, thermal_image: np.ndarray):
         """
@@ -919,14 +920,13 @@ class ThermalFaceDetector:
         # Store original shape
         original_shape = thermal_image.shape
 
-        # Normalize
-        thermal_image_norm = self.normalize_thermal(thermal_image)
-
-        # Resize
-        thermal_image_resized = cv2.resize(
-            thermal_image_norm, self.config.IMAGE_SIZE,
+        # Resize (Celsius) then normalize — same order as training's load path
+        # (T3.4/design i), via the single normalization authority (R5).
+        thermal_image_celsius = cv2.resize(
+            thermal_image, self.config.IMAGE_SIZE,
             interpolation=cv2.INTER_LINEAR
         )
+        thermal_image_resized = self.normalize_thermal(thermal_image_celsius)
 
         # Convert to tensor
         image_tensor = torch.from_numpy(

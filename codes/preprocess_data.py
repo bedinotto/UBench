@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from codes.unified_data import Config, MultiDirectoryDataLoader
 from codes.utils import preprocess_thermal_image, preprocess_mask
+from codes.preprocess_manifest import write_preprocess_manifest
 
 def preprocess_all_data():
     config = Config()
@@ -95,7 +96,17 @@ def preprocess_all_data():
     # Save metadata
     df = pd.DataFrame(metadata)
     df.to_csv(processed_dir / "metadata.csv", index=False)
-    
+
+    # Record the data-schema manifest (T3.4): the .npy now store Celsius, and
+    # the load-time guard rejects data without a current-version manifest.
+    write_preprocess_manifest(
+        processed_dir,
+        image_size=config.IMAGE_SIZE,
+        normalization=config.PREPROCESSING.normalization,
+        fixed_range_celsius=config.PREPROCESSING.fixed_range_celsius,
+        num_samples=len(df),
+    )
+
     print("\n" + "="*70)
     print(f"✅ Preprocessing completed!")
     print(f"Successfully processed: {processed_count}")
