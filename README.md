@@ -379,9 +379,12 @@ The two pretrained encoders download ImageNet weights from the timm/HuggingFace 
 | `optimizer` | `name` (`adam`\|`adamw`), `weight_decay`, `betas`, `grad_clip_norm` | Global (default) optimizer recipe. |
 | `scheduler` | `name` (`reduce_on_plateau`\|`warmup_cosine`), `patience`, `factor`, `warmup_frac` | Global (default) LR scheduler. |
 | `recipes` | `model_families`, `families` | **Per-family overrides** (M4): each model key maps to a family (CNN or transformer); each family overrides the optimizer/scheduler. Ships with CNN=Adam/plateau, transformer=AdamW+warmup→cosine. |
+| `preprocessing` | `normalization` (`fixed_range`\|`per_image_minmax`), `fixed_range_celsius`, `augmentation` | **Thermal preprocessing** (M7): `.npy` store Celsius, normalization applied at load (runtime-pure switch); `fixed_range` (default) preserves absolute temperature. `augmentation` = physical additive drift+noise + flip/affine. |
 | `regions` | list of 10 class names | Portuguese facial-region labels (index 0 = background). |
 
-**Not in config (by design):** batch size, workers, device, and AMP are chosen automatically by `hardware_detector` (there is no batch-size override key — that authority is deliberately single). The data-augmentation pipeline is currently hardcoded and moves to config in a later step (T3.4). Env-var overrides remain: `NUM_EPOCHS`, `K_FOLDS`, `TEST_SUBJECTS`, `UBENCH_DETERMINISTIC`.
+**Not in config (by design):** batch size, workers, device, and AMP are chosen automatically by `hardware_detector` (there is no batch-size override key — that authority is deliberately single). Env-var overrides remain: `NUM_EPOCHS`, `K_FOLDS`, `TEST_SUBJECTS`, `UBENCH_DETERMINISTIC`, `UBENCH_PRETRAINED`.
+
+> **Note (T3.4):** processed data now stores **Celsius** (`.npy`) with a `data/processed/preprocess_manifest.json` schema version. Data from before T3.4 (or a version mismatch) is rejected at load with an actionable error — rebuild with `./run.sh --force-preprocess`.
 
 ---
 

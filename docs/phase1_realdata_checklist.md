@@ -64,12 +64,22 @@ pip install -r requirements/requirements.txt
 
 ## 3. Dry run (single model, 2 epochs)
 
+> **⚠ T3.4 — rebuild processed data first.** Processed data now stores
+> **Celsius** with a `data/processed/preprocess_manifest.json` schema version.
+> Any `data/processed/` created before T3.4 has no manifest and will
+> **hard-error at load** (by design — legacy [0,1] data would be misread as
+> °C). If `data/processed/` already exists from an earlier run, force a rebuild:
+>
+> ```bash
+> python codes/main_pipeline.py --models unet --epochs 2 --force-preprocess
+> ```
+
 ```bash
 python codes/main_pipeline.py --models unet --epochs 2
 ```
 
 - [ ] Preprocessing runs automatically (no manual `preprocess_data.py`);
-      `data/processed/metadata.csv` appears.
+      `data/processed/metadata.csv` **and `preprocess_manifest.json`** appear.
 - [ ] `--epochs 2` is honored — training stops at epoch 2, not 100 (UB-13).
 - [ ] Exit code `0`; no `TRAINING FAILURE` summary (UB-07).
 
