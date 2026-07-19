@@ -26,7 +26,15 @@ class SetupManager:
         self.os_type = platform.system()  # 'Windows', 'Linux', 'Darwin'
         self.python_version = sys.version_info
         self.project_root = Path(__file__).parent.parent
-        self.requirements_file = self.project_root / "requirements" / "requirements.txt"
+        # Dependencies are declared in pyproject.toml and installed from a
+        # generated lock (UB-20b / T3.5) — never from loose ">=" floors.
+        self.pyproject = self.project_root / "pyproject.toml"
+        self.cpu_lock = self.project_root / "requirements" / "requirements.cpu.lock"
+        self.cuda_lock = self.project_root / "requirements" / "requirements.cuda.lock"
+        # Resolved torch wheel backend ("cpu" | "cu121" | "cu118"), set by
+        # install_dependencies(); run() uses it to decide whether CUDA is
+        # required after install.
+        self.backend = None
         
     def print_header(self):
         """Print setup header"""
@@ -38,7 +46,13 @@ class SetupManager:
         print("="*80 + "\n")
     
     def check_python_version(self):
-        """Verify Python version meets requirements"""
+        """Verify Python version meets the >=3.8 floor.
+
+        The CUDA-wheel ceiling (torch publishes CUDA wheels only for
+        3.8–3.12) is NOT enforced here: the default install path is CPU,
+        and CPU wheels exist for 3.13+.  ``_cuda_supports_python`` guards
+        the CUDA path only (UB-20b / T3.5).
+        """
         print("Checking Python version...")
 
         major = self.python_version.major
@@ -49,23 +63,23 @@ class SetupManager:
             print(f"   Current version: {sys.version}")
             return False
 
-        # PyTorch CUDA wheels are only published for Python 3.8 – 3.12.
-        # Python 3.13+ has no CUDA-enabled wheels on download.pytorch.org;
-        # pip will silently install the CPU-only build instead.
-        if major == 3 and minor >= 13:
-            print(f"❌ ERROR: Python {major}.{minor} is not supported for CUDA PyTorch.")
-            print("   PyTorch CUDA wheels are published only for Python 3.8 – 3.12.")
-            print("   With Python 3.13+, pip will silently install the CPU-only build,")
-            print("   which will cause 'CUDA not available' errors at runtime.")
-            print("")
-            print("   Please install a supported Python version (3.10 or 3.11 recommended):")
-            print("     https://www.python.org/downloads/")
-            print("")
-            print("   After installing, make sure the new Python is first in your PATH")
-            print("   and re-run run.bat.")
-            return False
-
         print(f"✅ Python version OK: {sys.version.split()[0]}")
+        return True
+
+    def _cuda_supports_python(self):
+        """CUDA torch wheels are published only for Python 3.8–3.12.
+
+        With 3.13+, pip/uv would silently fall back to the CPU wheel from the
+        CUDA index (or fail to resolve), yielding 'CUDA not available' at
+        runtime.  Callers on the CUDA path must stop rather than mislead.
+        """
+        major, minor = self.python_version.major, self.python_version.minor
+        if major == 3 and minor >= 13:
+            print(f"❌ ERROR: Python {major}.{minor} has no CUDA-enabled PyTorch wheels.")
+            print("   PyTorch CUDA wheels are published only for Python 3.8 – 3.12.")
+            print("   Install Python 3.10 or 3.11 for a GPU training box:")
+            print("     https://www.python.org/downloads/")
+            return False
         return True
 
     
@@ -194,118 +208,124 @@ class SetupManager:
 
         return None
 
-    def _pytorch_already_has_cuda(self):
-        """Return True if an already-installed PyTorch build has CUDA support.
-        Uses a subprocess so that freshly-installed wheels are always visible.
-        """
-        result = subprocess.run(
-            [sys.executable, "-c",
-             "import torch; print(torch.cuda.is_available())"],
-            capture_output=True, text=True
-        )
-        return result.returncode == 0 and result.stdout.strip() == "True"
+    @staticmethod
+    def _in_venv():
+        """True when running inside a virtual environment (not system Python).
 
-    def install_pytorch_cuda(self):
+        setup.py refuses to install into system Python (§3.1): it can only
+        install into the interpreter already active, so it requires a venv
+        rather than silently creating one — creating a nested venv from inside
+        run.sh's active shell would orphan the running interpreter (UB-20b).
         """
-        Install the correct CUDA-enabled PyTorch build.
-        Plain `pip install torch` always downloads the CPU-only wheel;
-        CUDA builds require a special --index-url from pytorch.org.
-        """
-        print("\nInstalling PyTorch with CUDA support...")
+        return sys.prefix != sys.base_prefix or "VIRTUAL_ENV" in os.environ
 
-        # Skip if CUDA torch is already present
-        if self._pytorch_already_has_cuda():
-            import torch
-            print(f"✅ PyTorch {torch.__version__} with CUDA {torch.version.cuda} already installed")
+    def _ensure_uv(self):
+        """Return True if the ``uv`` resolver is available on PATH."""
+        try:
+            subprocess.run(["uv", "--version"], capture_output=True, check=True)
             return True
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            print("❌ ERROR: 'uv' is required to install from the lockfile but was not found.")
+            print("   Install it (https://docs.astral.sh/uv/):")
+            print("     curl -LsSf https://astral.sh/uv/install.sh | sh")
+            print("   or:  pip install uv")
+            return False
 
-        # Detect which CUDA SDK the GPU driver supports
+    def _resolve_backend(self):
+        """Resolve the torch wheel backend: 'cpu' (default) or a CUDA tag.
+
+        Honors an explicit ``UBENCH_TORCH_BACKEND`` override
+        (cpu|cu121|cu118|auto); otherwise probes the NVIDIA driver. There is no
+        aging hardcoded CUDA default — CPU is the default when no CUDA driver is
+        present (UB-20b).
+        """
+        override = os.environ.get("UBENCH_TORCH_BACKEND", "auto").strip().lower()
+        if override in ("cpu", "cu121", "cu118"):
+            return override
+        if override not in ("auto", ""):
+            print(f"⚠️  Unknown UBENCH_TORCH_BACKEND='{override}' — falling back to auto-detect.")
+
         cuda_ver = self._detect_cuda_driver_version()
-
         if cuda_ver is None:
-            print("⚠️  nvidia-smi not found or NVIDIA driver not installed.")
-            print("   Cannot auto-detect CUDA version.")
-            print("   Defaulting to CUDA 12.1 wheel — install NVIDIA drivers first if this fails.")
-            cuda_ver = (12, 1)
-
-        # Choose the best matching PyTorch CUDA build
+            return "cpu"
         if cuda_ver >= (12, 0):
-            cuda_tag = "cu121"
-            cuda_label = "CUDA 12.1"
-        elif cuda_ver >= (11, 0):
-            cuda_tag = "cu118"
-            cuda_label = "CUDA 11.8"
-        else:
-            print(f"❌ ERROR: CUDA {cuda_ver[0]}.{cuda_ver[1]} is below the minimum CUDA 11.8.")
-            print("   Please update your NVIDIA drivers.")
-            print("   Visit: https://www.nvidia.com/drivers")
-            return False
+            return "cu121"
+        if cuda_ver >= (11, 0):
+            return "cu118"
+        print(f"⚠️  Detected CUDA {cuda_ver[0]}.{cuda_ver[1]} is below the 11.8 minimum — using CPU wheels.")
+        return "cpu"
 
-        index_url = f"https://download.pytorch.org/whl/{cuda_tag}"
-        print(f"   Detected driver supports {cuda_label} → installing PyTorch {cuda_tag} build")
-        print(f"   Index URL: {index_url}")
-        print("   (This may take several minutes — PyTorch wheels are ~2 GB)")
-        print()
+    def _lock_for_backend(self, backend):
+        """Return the lockfile Path for *backend*, generating the CUDA lock if
+        absent.
 
-        # --force-reinstall --no-deps ensures we replace any existing CPU-only
-        # torch wheel. Without this, pip says "Requirement already satisfied"
-        # and skips the download, leaving the CPU build in place.
-        cmd = [
-            sys.executable, "-m", "pip", "install",
-            "--force-reinstall", "--no-deps",
-            "torch", "torchvision", "torchaudio",
-            "--index-url", index_url,
-            "--no-cache-dir",
-        ]
+        The CUDA lock is not committed (its wheel index is unreachable from
+        CI/dev, and one lock cannot pin both CPU and CUDA torch — R10): the GPU
+        box materializes it from pyproject.toml on first setup.
+        """
+        if backend == "cpu":
+            return self.cpu_lock
+        if not self.cuda_lock.exists():
+            print(f"   No {self.cuda_lock.name} yet — compiling it from pyproject.toml ({backend})...")
+            subprocess.run(
+                ["uv", "pip", "compile", str(self.pyproject),
+                 "--extra", "dev", "--torch-backend", backend,
+                 "-o", str(self.cuda_lock)],
+                check=True,
+            )
+        return self.cuda_lock
 
-        try:
-            subprocess.run(cmd, check=True)
-            print("✅ PyTorch (CUDA) installed successfully")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"❌ ERROR: Failed to install PyTorch with CUDA: {e}")
-            print("   Please install manually:")
-            print(f"   pip install torch torchvision torchaudio --index-url {index_url}")
-            print("   Or visit: https://pytorch.org/get-started/locally/")
-            return False
-
-
-    def install_other_dependencies(self):
-        """Install non-PyTorch dependencies from requirements.txt"""
-        print("\nInstalling other dependencies from requirements.txt...")
-
-        if not self.requirements_file.exists():
-            print(f"❌ ERROR: requirements.txt not found at {self.requirements_file}")
-            return False
-
-        cmd = [
-            sys.executable, "-m", "pip", "install",
-            "-r", str(self.requirements_file),
-            "--no-cache-dir",
-        ]
-
-        if self.os_type == "Linux":
-            try:
-                subprocess.run(cmd + ["--break-system-packages"], check=True)
-                print("✅ Other dependencies installed successfully")
-                return True
-            except subprocess.CalledProcessError:
-                pass  # Fall through to standard install
-
-        try:
-            subprocess.run(cmd, check=True)
-            print("✅ Other dependencies installed successfully")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"❌ ERROR: Failed to install dependencies: {e}")
-            return False
-
-    # Legacy alias kept for backward compatibility
     def install_dependencies(self):
-        """Install all dependencies (PyTorch CUDA first, then the rest)"""
-        if not self.install_pytorch_cuda():
+        """Install the full environment from the generated lockfile via uv.
+
+        Reproducible install (UB-20b): syncs the exact pinned closure — no loose
+        ">=" floors, no ``--force-reinstall --no-deps``, no system-Python
+        ``--break-system-packages``. CPU is the default path; a CUDA driver
+        selects the matching wheel backend and lock. Sets ``self.backend``.
+        """
+        print("\nInstalling dependencies from the lockfile...")
+
+        if not self._in_venv():
+            print("❌ ERROR: not running inside a virtual environment.")
+            print("   setup.py will not install into system Python (§3.1).")
+            print("   Create and activate one, then re-run:")
+            print("     uv venv && source .venv/bin/activate     # Windows: .venv\\Scripts\\activate")
+            print("     ./run.sh   # or: python codes/setup.py")
             return False
-        return self.install_other_dependencies()
+
+        if not self._ensure_uv():
+            return False
+
+        self.backend = self._resolve_backend()
+        if self.backend != "cpu" and not self._cuda_supports_python():
+            return False
+
+        try:
+            lock = self._lock_for_backend(self.backend)
+        except subprocess.CalledProcessError as e:
+            print(f"❌ ERROR: Failed to compile the {self.backend} lockfile: {e}")
+            return False
+
+        if not lock.exists():
+            print(f"❌ ERROR: lockfile not found: {lock}")
+            return False
+
+        print(f"   Backend: {self.backend}   Lockfile: {lock.name}")
+        if self.backend != "cpu":
+            print("   (CUDA wheels are ~2 GB — this may take several minutes)")
+
+        try:
+            subprocess.run(
+                ["uv", "pip", "sync", str(lock),
+                 "--torch-backend", self.backend,
+                 "--python", sys.executable],
+                check=True,
+            )
+            print("✅ Dependencies installed from the lockfile")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"❌ ERROR: Failed to install from {lock.name}: {e}")
+            return False
 
     
     def check_cuda(self):
@@ -377,14 +397,31 @@ class SetupManager:
             else:
                 tag = "cu121" if cuda_driver >= (12, 0) else "cu118"
                 print(f"   Your driver supports CUDA {cuda_driver[0]}.{cuda_driver[1]}.")
-                print(f"   Run the following command to fix this:")
+                print(f"   Re-run setup pinned to the CUDA backend (installs from the CUDA lock):")
                 print(f"")
-                print(f"     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/{tag}")
+                print(f"     UBENCH_TORCH_BACKEND={tag} python codes/setup.py")
                 print(f"")
                 print(f"   Or visit: https://pytorch.org/get-started/locally/")
             return False
 
     
+    def _verify_torch(self):
+        """Confirm torch imports in the target interpreter (CPU path).
+
+        The CPU install does not need CUDA — it only needs torch to load — so
+        this replaces the CUDA assertion for the default path (UB-20b).
+        """
+        probe = subprocess.run(
+            [sys.executable, "-c", "import torch; print(torch.__version__)"],
+            capture_output=True, text=True,
+        )
+        if probe.returncode == 0:
+            print(f"✅ PyTorch {probe.stdout.strip()} installed (CPU build)")
+            return True
+        print("❌ ERROR: PyTorch failed to import after install.")
+        print(probe.stderr.strip()[:500])
+        return False
+
     def create_directories(self):
         """Create required directory structure"""
         print("\nCreating directory structure...")
@@ -527,37 +564,31 @@ class SetupManager:
         # Step 3: Upgrade pip
         self.upgrade_pip()
         
-        # Step 4: Check CUDA (before installation)
-        cuda_before = self.check_cuda()
-        
-        # Step 5: Install PyTorch with CUDA, then other dependencies
-        if not self.install_pytorch_cuda():
-            print("\n❌ CRITICAL: Could not install CUDA-enabled PyTorch.")
-            print("   The pipeline requires a CUDA-capable NVIDIA GPU and matching PyTorch.")
-            print("   See https://pytorch.org/get-started/locally/ for manual install instructions.")
+        # Step 4: Install the full environment from the lockfile. CPU is the
+        # default path; a CUDA driver selects the matching wheel backend + lock.
+        if not self.install_dependencies():
+            print("\n❌ CRITICAL: Could not install dependencies from the lockfile.")
             return False
 
-        if not self.install_other_dependencies():
+        # Step 5: Verify the install. CUDA is required only on the CUDA path;
+        # a CPU install just needs torch to import.
+        if self.backend != "cpu":
+            cuda_after = self.check_cuda()
+            if cuda_after is not True:
+                print("\n❌ CRITICAL: CUDA still not available after installation.")
+                print("   Please follow the manual install steps shown above.")
+                return False
+        elif not self._verify_torch():
             return False
 
-        # Step 6: Verify CUDA is now available
-        # Note: check_cuda() returns True (CUDA ok), False (torch present, no CUDA),
-        # or None (torch not importable). All non-True outcomes are failures here.
-        cuda_after = self.check_cuda()
-        if cuda_after is not True:
-            print("\n❌ CRITICAL: CUDA still not available after installation.")
-            print("   Please follow the manual install steps shown above.")
-            return False
-
-        
-        # Step 7: Create directories
+        # Step 6: Create directories
         if not self.create_directories():
             return False
-        
-        # Step 8: Extract data from ZIP files
+
+        # Step 7: Extract data from ZIP files
         self.extract_data()
-        
-        # Step 9: Check data files
+
+        # Step 8: Check data files
         data_ready = self.check_data_files()
         
         # Print next steps

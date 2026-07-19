@@ -18,7 +18,8 @@ try:
     import GPUtil
 except ImportError as e:
     print(f"Missing required package: {e}")
-    print("Please run: pip install -r requirements.txt")
+    print("Please install from the lockfile (see CLAUDE.md §3.1):")
+    print("  uv pip sync requirements/requirements.cpu.lock --torch-backend=cpu")
     sys.exit(1)
 
 
