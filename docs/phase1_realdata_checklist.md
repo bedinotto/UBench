@@ -31,8 +31,9 @@ evidence, and record any deviation as a new ledger row.
 - [ ] NVIDIA GPU with **≥ 6 GB** VRAM (GTX 1660 Ti baseline tier; AMP is
       auto-disabled on GTX/CPU — do not force it on).
 - [ ] Git **LFS** installed (`git lfs version`).
-- [ ] Python 3.10 or 3.11 (GPU training boxes stay on 3.10/3.11 until T3.5
-      verifies the CUDA wheels on 3.13).
+- [ ] Python 3.10 or 3.11 (CUDA torch wheels are published only for 3.8–3.12,
+      so GPU training boxes stay on 3.10/3.11; `setup.py` hard-errors the CUDA
+      path on 3.13+).
 
 ## 1. Fresh clone + data
 
@@ -46,21 +47,31 @@ git lfs pull                     # pulls requirements/*.zip (the real corpus)
 
 ## 2. Environment (GPU path, §3.1)
 
+> **⚠ Use Python 3.10 or 3.11 here.** CUDA torch wheels are published only for
+> 3.8–3.12; on 3.13+ the CUDA path hard-errors (CPU wheels exist for 3.13, but
+> not CUDA). `codes/setup.py` enforces this on the CUDA path.
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-python -m pip install -U pip
-python codes/setup.py                       # validates env + installs CUDA torch
-pip install -r requirements/requirements.txt
+uv venv --python 3.11 && source .venv/bin/activate
+
+# Generate + COMMIT the CUDA lock ON THIS BOX (its wheel index is unreachable
+# from CI, so it is not committed to the repo). Detect the driver's CUDA tag
+# (cu121 for driver>=12.x, else cu118) — or let setup.py do it below.
+uv pip compile pyproject.toml --extra dev --torch-backend=cu121 \
+    -o requirements/requirements.cuda.lock
+git add requirements/requirements.cuda.lock && git commit -m "chore(deps): CUDA lock (<box>, T3.5)"
+
+# Install from the CUDA lock. setup.py auto-detects the driver → cu121/cu118 and
+# runs `uv pip sync requirements/requirements.cuda.lock --torch-backend=<tag>`,
+# compiling the lock first if the file above is absent. (Override the backend
+# with UBENCH_TORCH_BACKEND=cu121|cu118 if auto-detect is wrong.)
+python codes/setup.py                       # validates env + installs from the CUDA lock
 ```
 
 - [ ] `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`
       prints a CUDA build and `True`.
-
-> ⚠ **UB-20b caveats (until T3.5).** `codes/setup.py` installs torch with
-> `--force-reinstall --no-deps` against a pinned `cu121` index and dependencies
-> are unpinned (`>=`). If the install resolves a broken combination, capture the
-> exact versions (`pip freeze > freeze.txt`) and file it against UB-20 — do not
-> hand-patch and continue silently.
+- [ ] `requirements/requirements.cuda.lock` is committed; `logs/<run>/run_metadata.json`
+      `lockfile_hash` == `sha256sum requirements/requirements.cuda.lock`.
 
 ## 3. Dry run (single model, 2 epochs)
 
