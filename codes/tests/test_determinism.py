@@ -156,3 +156,9 @@ def test_run_metadata_has_provenance_keys() -> None:
     assert md["test_subjects"] == ["S5"]
     # Effective recipe recorded per model (M9).
     assert md["recipes"]["unet"] == {"optimizer": "adam", "scheduler": "reduce_on_plateau"}
+    # Lockfile hash records which pinned environment produced the run (UB-20b).
+    # On the CPU test env this resolves to the committed CPU lock — a real
+    # sha256 hex digest, never the old None placeholder.
+    lock_hash = md["lockfile_hash"]
+    assert isinstance(lock_hash, str) and len(lock_hash) == 64
+    assert all(c in "0123456789abcdef" for c in lock_hash)

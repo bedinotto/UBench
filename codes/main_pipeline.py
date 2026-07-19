@@ -8,6 +8,7 @@ import sys
 import os
 import gc
 import json
+import hashlib
 import subprocess
 import traceback
 import multiprocessing
@@ -73,6 +74,23 @@ def _git(args: list[str], default: str = "unknown") -> str:
         return default
 
 
+def _resolve_lockfile_hash() -> str | None:
+    """sha256 of the active dependency lockfile (UB-20b / M6/M9), or ``None``.
+
+    Records exactly which pinned environment produced a run. Heuristic: hash the
+    CUDA lock when a CUDA torch build is active *and* that lock exists (it is
+    materialized on the GPU box, not committed), otherwise the CPU lock. Returns
+    ``None`` only when no lockfile is present.
+    """
+    reqs = Path(__file__).resolve().parent.parent / "requirements"
+    cpu_lock = reqs / "requirements.cpu.lock"
+    cuda_lock = reqs / "requirements.cuda.lock"
+    lock = cuda_lock if (torch.version.cuda is not None and cuda_lock.exists()) else cpu_lock
+    if not lock.exists():
+        return None
+    return hashlib.sha256(lock.read_bytes()).hexdigest()
+
+
 def collect_run_metadata(config, run_id: str, models_to_train: list[str]) -> dict:
     """Collect per-run provenance (M6): git state, env, seed, and effective config.
 
@@ -116,8 +134,10 @@ def collect_run_metadata(config, run_id: str, models_to_train: list[str]) -> dic
         "test_subjects": list(config.TEST_SUBJECTS),
         "image_size": list(config.IMAGE_SIZE),
         "num_classes": config.NUM_CLASSES,
-        # TODO(T3.5): record the resolved lockfile hash once lockfiles land (UB-20b).
-        "lockfile_hash": None,
+        # Which pinned environment produced this run (UB-20b / M6): sha256 of
+        # the active lockfile (CUDA lock if a CUDA torch build is active, else
+        # the committed CPU lock). None only if no lockfile is present.
+        "lockfile_hash": _resolve_lockfile_hash(),
     }
 
 
