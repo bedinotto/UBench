@@ -74,11 +74,6 @@
   "72": "_raw_to_celsius",
   "73": ".__init__",
   "74": "Pipeline",
-  "75": "main_pipeline.py",
   "76": "Session 10 — T3.2 (UB-16/17, M5): pretrained encoders via timm/MONAI",
-  "77": "Session 10 — T3.2 (UB-16/17, M5): pretrained encoders — timm route",
-  "78": "RecipesConfig",
-  "79": "Session 12 — T3.4 (UB-19, M7): thermal-domain preprocessing",
-  "80": "Session 12 — T3.4 (UB-19, M7): thermal-domain preprocessing",
-  "81": "DoubleConv"
+  "77": "Session 10 — T3.2 (UB-16/17, M5): pretrained encoders — timm route"
 }
