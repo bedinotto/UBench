@@ -57,8 +57,8 @@ uv venv --python 3.11 && source .venv/bin/activate
 # Generate + COMMIT the CUDA lock ON THIS BOX (its wheel index is unreachable
 # from CI, so it is not committed to the repo). Detect the driver's CUDA tag
 # (cu121 for driver>=12.x, else cu118) — or let setup.py do it below.
-uv pip compile pyproject.toml --extra dev --torch-backend=cu121 \
-    -o requirements/requirements.cuda.lock
+uv pip compile pyproject.toml --extra dev --python-version 3.10 \
+    --torch-backend=cu121 -o requirements/requirements.cuda.lock
 git add requirements/requirements.cuda.lock && git commit -m "chore(deps): CUDA lock (<box>, T3.5)"
 
 # Install from the CUDA lock. setup.py auto-detects the driver → cu121/cu118 and

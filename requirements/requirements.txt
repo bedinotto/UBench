@@ -9,8 +9,8 @@
 #
 # Install (CUDA — GPU training box): the CUDA lock is generated on the box
 # (its wheel index is unreachable from CI), see docs/phase1_realdata_checklist.md:
-#   uv pip compile pyproject.toml --extra dev --torch-backend=cu121 \
-#       -o requirements/requirements.cuda.lock
+#   uv pip compile pyproject.toml --extra dev --python-version 3.10 \
+#       --torch-backend=cu121 -o requirements/requirements.cuda.lock
 #   uv pip sync requirements/requirements.cuda.lock --torch-backend=cu121
 #
 # Full protocol: CLAUDE.md §3.1.
