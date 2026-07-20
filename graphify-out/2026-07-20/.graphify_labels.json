@@ -84,7 +84,5 @@
   "82": "_TeeStream",
   "83": "Session 13 — T3.5 (UB-20b): lockfiles + reproducible install",
   "84": "._detect_cuda_driver_version",
-  "85": "ubench",
-  "86": "Config",
-  "87": "create_kfold_data_loaders"
+  "85": "ubench"
 }
