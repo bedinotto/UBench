@@ -44,7 +44,7 @@ run_extract() {
     echo "================================================================================"
     echo ""
 
-    $PYTHON_CMD codes/extract_data.py 2>&1 | tee -a "${RUN_LOG_DIR}/extract.log"
+    $PYTHON_CMD -m codes.extract_data 2>&1 | tee -a "${RUN_LOG_DIR}/extract.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo -e "${RED}ERROR: Data extraction failed!${NC}"
@@ -60,7 +60,7 @@ run_setup() {
     echo "================================================================================"
     echo ""
 
-    $PYTHON_CMD codes/setup.py 2>&1 | tee -a "${RUN_LOG_DIR}/setup.log"
+    $PYTHON_CMD -m codes.setup 2>&1 | tee -a "${RUN_LOG_DIR}/setup.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo -e "${RED}ERROR: Setup failed!${NC}"
@@ -80,7 +80,7 @@ run_pipeline() {
     # ${RUN_LOG_DIR}/pipeline.log (same dir now that the run id is shared);
     # the shell captures its own view in console.log so two writers never
     # share one file.
-    $PYTHON_CMD codes/main_pipeline.py "$@" 2>&1 | tee -a "${RUN_LOG_DIR}/console.log"
+    $PYTHON_CMD -m codes.main_pipeline "$@" 2>&1 | tee -a "${RUN_LOG_DIR}/console.log"
     
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo -e "${RED}ERROR: Pipeline failed!${NC}"

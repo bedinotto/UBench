@@ -18,9 +18,6 @@ from pathlib import Path
 from datetime import datetime
 import argparse
 
-# Add parent directory to sys.path *before* importing codes modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from codes.logger import TeeLogger
 
 
@@ -38,12 +35,14 @@ from codes.preprocess_data import preprocess_all_data
 # Import model architectures and registry
 from codes.model_registry import create_model, get_registered_models
 from codes.config_schema import resolve_recipe
-# Import models to ensure they are registered
-import codes.unet_v2
-import codes.transunet
-import codes.swin_unet_plus_plus
-import codes.swin_pretrained          # T3.2: pretrained SwinV2 encoder (M5)
-import codes.transunet_pretrained     # T3.2: pretrained R50+ViT-B/16 hybrid (M5)
+# Import models for their side effect: each module runs @register_model at
+# import time (test_all_models_registered pins the resulting set). noqa F401 —
+# these are imported *for* the registration side effect, never referenced.
+import codes.unet_v2  # noqa: F401
+import codes.transunet  # noqa: F401
+import codes.swin_unet_plus_plus  # noqa: F401
+import codes.swin_pretrained  # noqa: F401
+import codes.transunet_pretrained  # noqa: F401
 
 # Short CLI aliases for registry keys — an explicit table next to the registry,
 # not a parallel truth (UB-26). Valid --models choices are the registered keys

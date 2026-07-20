@@ -17,10 +17,7 @@ from pathlib import Path
 try:
     from codes.logger import start_from_env as _start_log
 except ImportError:
-    try:
-        from logger import start_from_env as _start_log
-    except ImportError:
-        _start_log = None  # graceful fallback
+    _start_log = None  # graceful fallback if logger isn't available yet
 
 
 # Resolve the project root (parent of codes/)
@@ -170,16 +167,9 @@ def _generate_annotations():
             generate_polygonal_masks,
         )
     except ImportError:
-        # Try relative import for direct execution
-        try:
-            from generate_boxes_polygons import (
-                generate_bounding_boxes,
-                generate_polygonal_masks,
-            )
-        except ImportError:
-            print("⚠️  Could not import generate_boxes_polygons — "
-                  "skipping annotation generation")
-            return
+        print("⚠️  Could not import generate_boxes_polygons — "
+              "skipping annotation generation")
+        return
 
     csv_files = sorted(DATA_DIR.glob("S*.csv"))
     valid_files = [

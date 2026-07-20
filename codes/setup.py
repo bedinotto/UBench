@@ -10,9 +10,6 @@ import platform
 import os
 from pathlib import Path
 
-# Add parent directory for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 try:
     from codes.logger import start_from_env as _start_log
 except ImportError:
@@ -537,13 +534,9 @@ class SetupManager:
             from codes.extract_data import extract_all_data
             return extract_all_data()
         except ImportError:
-            try:
-                from extract_data import extract_all_data
-                return extract_all_data()
-            except ImportError:
-                print("⚠️  Could not import extract_data module — "
-                      "please run codes/extract_data.py manually")
-                return False
+            print("⚠️  Could not import extract_data module — "
+                  "run: python -m codes.extract_data")
+            return False
     
     def run(self):
         """Execute complete setup process"""

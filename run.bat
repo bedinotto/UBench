@@ -137,7 +137,7 @@ if !SKIP_EXTRACT!==0 (
     echo.
     echo [STEP 0: DATA EXTRACTION] >> "%LOG_FILE%"
 
-    %PYTHON_CMD% codes\extract_data.py
+    %PYTHON_CMD% -m codes.extract_data
     if !ERRORLEVEL! NEQ 0 (
         echo [ERROR] Data extraction failed! >> "%LOG_FILE%"
         echo [ERROR] Data extraction failed!
@@ -156,7 +156,7 @@ if !SKIP_SETUP!==0 (
     echo.
     echo [STEP 1: ENVIRONMENT SETUP] >> "%LOG_FILE%"
 
-    %PYTHON_CMD% codes\setup.py
+    %PYTHON_CMD% -m codes.setup
     if !ERRORLEVEL! NEQ 0 (
         echo [ERROR] Setup failed! See messages above for details. >> "%LOG_FILE%"
         echo [ERROR] Setup failed! See messages above for details.
@@ -175,7 +175,7 @@ echo ===========================================================================
 echo.
 echo [STEP 2: RUNNING TRAINING PIPELINE] >> "%LOG_FILE%"
 
-%PYTHON_CMD% codes\main_pipeline.py !PIPELINE_ARGS!
+%PYTHON_CMD% -m codes.main_pipeline !PIPELINE_ARGS!
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Pipeline failed! >> "%LOG_FILE%"
     echo [ERROR] Pipeline failed!

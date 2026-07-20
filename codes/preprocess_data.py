@@ -12,9 +12,6 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-# Add parent directory to sys.path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from codes.unified_data import Config, MultiDirectoryDataLoader
 from codes.utils import preprocess_thermal_image, preprocess_mask
 from codes.preprocess_manifest import write_preprocess_manifest

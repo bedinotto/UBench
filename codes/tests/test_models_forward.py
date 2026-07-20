@@ -178,3 +178,26 @@ def test_pretrained_stem_matches_hub_sum(key: str, timm_id: str) -> None:
     )
     total = sum(p.numel() for p in model.parameters())
     print(f"PRETRAINED-LOAD {key}: stem={name1} verified; total params {total:,}")
+
+
+# --------------------------------------------------------------------------- #
+# Registration pin (UB-21 / T3.6 ▲D).
+# --------------------------------------------------------------------------- #
+def test_all_models_registered() -> None:
+    """Importing the pipeline registers exactly the five expected models.
+
+    ``@register_model`` fires only as an import side effect; after the UB-21
+    import refactor a dropped or reordered registration import in
+    ``main_pipeline`` would *silently* deregister a model and shrink the CLI
+    choices (UB-26) — no error, wrong benchmark. Pin the set so any such
+    regression fails loudly.
+    """
+    import codes.main_pipeline  # noqa: F401 — import triggers registration
+
+    assert set(get_registered_models()) == {
+        "unet",
+        "transunet",
+        "swin_unet_plus_plus",
+        "swin_pretrained",
+        "transunet_pretrained",
+    }

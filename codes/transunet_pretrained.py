@@ -27,12 +27,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    from .model_registry import register_model
-    from .pretrained_stem import resolve_pretrained
-except ImportError:  # pragma: no cover - direct-script import fallback
-    from model_registry import register_model
-    from pretrained_stem import resolve_pretrained
+from codes.model_registry import register_model
+from codes.pretrained_stem import resolve_pretrained
 
 # timm hybrid model id (ResNet-50 stem + ViT-B/16). Verified available at
 # session start via timm.list_models('*vit_base_r50*', pretrained=True).
@@ -112,3 +108,15 @@ class TransUNetPretrained(nn.Module):
         d = self.up3(d)
         d = self.up4(d)
         return self.head(d)
+
+
+if __name__ == "__main__":  # pragma: no cover - offline package self-test (UB-21/T3.6)
+    # Run as: python -m codes.transunet_pretrained — builds with RANDOM weights
+    # (pretrained=False, no network) and prints the forward-pass output shape.
+    import os
+
+    os.environ.setdefault("UBENCH_PRETRAINED", "0")
+    from codes.model_registry import create_model
+
+    _m = create_model("transunet_pretrained", in_channels=1, num_classes=10, img_size=256, pretrained=False)
+    print("transunet_pretrained:", tuple(_m(torch.zeros(2, 1, 256, 256)).shape))

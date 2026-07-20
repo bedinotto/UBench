@@ -17,18 +17,11 @@ import cv2
 import json
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-try:
-    from codes.unified_data import Config
-    from codes.naming import checkpoint_path, epoch_checkpoint_glob
-    from codes.metrics import SegmentationMetrics
-    from codes.config_schema import resolve_recipe
-    from codes.utils import apply_normalization
-except ImportError:
-    from unified_data import Config
-    from naming import checkpoint_path, epoch_checkpoint_glob
-    from metrics import SegmentationMetrics
-    from config_schema import resolve_recipe
-    from utils import apply_normalization
+from codes.unified_data import Config
+from codes.naming import checkpoint_path, epoch_checkpoint_glob
+from codes.metrics import SegmentationMetrics
+from codes.config_schema import resolve_recipe
+from codes.utils import apply_normalization
 
 
 def _safe_filename(name: str) -> str:

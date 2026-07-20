@@ -17,16 +17,10 @@ import time
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-try:
-    from codes.unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
-    from codes.unified_training import _safe_filename, CombinedLoss
-    from codes.naming import checkpoint_path
-    from codes.metrics import SegmentationMetrics
-except ImportError:
-    from unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
-    from unified_training import _safe_filename, CombinedLoss
-    from naming import checkpoint_path
-    from metrics import SegmentationMetrics
+from codes.unified_data import Config, create_kfold_data_loaders, shutdown_data_loaders
+from codes.unified_training import _safe_filename, CombinedLoss
+from codes.naming import checkpoint_path
+from codes.metrics import SegmentationMetrics
 
 
 def timed_inference(model: nn.Module, val_loader, device, warmup: int = 5) -> Dict:

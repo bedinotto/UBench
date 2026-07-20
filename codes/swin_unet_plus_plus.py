@@ -210,7 +210,7 @@ class NestedConvBlock(nn.Module):
         return self.conv(x)
 
 
-from .model_registry import register_model
+from codes.model_registry import register_model
 
 @register_model("swin_unet_plus_plus")
 class SwinUNetPlusPlus(nn.Module):
@@ -345,3 +345,15 @@ class SwinUNetPlusPlus(nn.Module):
         output = self.final(x_out)
 
         return output
+
+
+if __name__ == "__main__":  # pragma: no cover - offline package self-test (UB-21/T3.6)
+    # Run as: python -m codes.swin_unet_plus_plus — builds with random weights
+    # (no downloads) and prints the forward-pass output shape.
+    import os
+
+    os.environ.setdefault("UBENCH_PRETRAINED", "0")
+    from codes.model_registry import create_model
+
+    _m = create_model("swin_unet_plus_plus", in_channels=1, num_classes=10, img_size=256)
+    print("swin_unet_plus_plus:", tuple(_m(torch.zeros(2, 1, 256, 256)).shape))

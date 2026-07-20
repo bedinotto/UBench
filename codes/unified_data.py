@@ -19,16 +19,10 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import StratifiedKFold, GroupKFold
 import random
 
-try:
-    from codes.config_schema import load_config
-    from codes.utils import apply_normalization
-    from codes.preprocess_manifest import verify_preprocess_manifest
-    from codes.augmentation import build_thermal_transform
-except ImportError:
-    from config_schema import load_config
-    from utils import apply_normalization
-    from preprocess_manifest import verify_preprocess_manifest
-    from augmentation import build_thermal_transform
+from codes.config_schema import load_config
+from codes.utils import apply_normalization
+from codes.preprocess_manifest import verify_preprocess_manifest
+from codes.augmentation import build_thermal_transform
 
 
 def _raw_to_celsius(raw):

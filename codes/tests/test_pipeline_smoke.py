@@ -27,9 +27,11 @@ from pathlib import Path
 
 import pandas as pd
 
-# Paths — subprocess CWD is the fixture root, so we need absolute paths.
+# Subprocess CWD is the fixture root (tests chdir there for data discovery),
+# so the pipeline is run as a module (`-m codes.main_pipeline`) with the repo
+# root on PYTHONPATH — the package-execution form after UB-21 removed the
+# sys.path hacks.
 _REPO_ROOT = Path(__file__).parents[2]
-_MAIN_PIPELINE = _REPO_ROOT / "codes" / "main_pipeline.py"
 
 
 def run_pipeline_subprocess(
@@ -39,9 +41,9 @@ def run_pipeline_subprocess(
 ) -> tuple[int, str]:
     """Invoke the real pipeline entry point in a subprocess.
 
-    Runs ``codes/main_pipeline.py`` — the same script ``run.sh`` invokes —
-    with ``UBENCH_ALLOW_CPU=1`` so hardware detection returns a CPU
-    profile on machines without NVIDIA GPUs (UB-23).
+    Runs ``python -m codes.main_pipeline`` — the same package-execution form
+    ``run.sh`` invokes — with ``UBENCH_ALLOW_CPU=1`` so hardware detection
+    returns a CPU profile on machines without NVIDIA GPUs (UB-23).
 
     Parameters
     ----------
@@ -61,7 +63,11 @@ def run_pipeline_subprocess(
     """
     env = os.environ.copy()
     env["UBENCH_ALLOW_CPU"] = "1"  # UB-23: explicit CPU opt-in for the gate
-    cmd = [sys.executable, str(_MAIN_PIPELINE), "--models"] + models + (extra_args or [])
+    # `codes` must be importable though CWD is the fixture root (UB-21: -m form).
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(_REPO_ROOT), env.get("PYTHONPATH", "")) if p
+    )
+    cmd = [sys.executable, "-m", "codes.main_pipeline", "--models"] + models + (extra_args or [])
     result = subprocess.run(
         cmd,
         env=env,

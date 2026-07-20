@@ -28,7 +28,7 @@ class DoubleConv(nn.Module):
         return self.double_conv(x)
 
 
-from .model_registry import register_model
+from codes.model_registry import register_model
 
 @register_model("unet")
 class UNet(nn.Module):
@@ -97,3 +97,15 @@ class UNet(nn.Module):
         dec1 = self.dec1(dec1)
 
         return self.out(dec1)
+
+
+if __name__ == "__main__":  # pragma: no cover - offline package self-test (UB-21/T3.6)
+    # Run as: python -m codes.unet_v2 — builds with random weights (no
+    # downloads) and prints the forward-pass output shape.
+    import os
+
+    os.environ.setdefault("UBENCH_PRETRAINED", "0")
+    from codes.model_registry import create_model
+
+    _m = create_model("unet", in_channels=1, num_classes=10)
+    print("unet:", tuple(_m(torch.zeros(2, 1, 256, 256)).shape))

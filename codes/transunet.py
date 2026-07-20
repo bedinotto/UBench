@@ -165,7 +165,7 @@ class CNNEncoder(nn.Module):
         return x0, x1, x2, x3
 
 
-from .model_registry import register_model
+from codes.model_registry import register_model
 
 @register_model("transunet")
 class TransUNet(nn.Module):
@@ -300,3 +300,15 @@ class TransUNet(nn.Module):
         output = self.final(d0)
 
         return output
+
+
+if __name__ == "__main__":  # pragma: no cover - offline package self-test (UB-21/T3.6)
+    # Run as: python -m codes.transunet — builds with random weights (no
+    # downloads) and prints the forward-pass output shape.
+    import os
+
+    os.environ.setdefault("UBENCH_PRETRAINED", "0")
+    from codes.model_registry import create_model
+
+    _m = create_model("transunet", in_channels=1, num_classes=10, img_size=256)
+    print("transunet:", tuple(_m(torch.zeros(2, 1, 256, 256)).shape))
