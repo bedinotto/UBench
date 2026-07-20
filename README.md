@@ -410,7 +410,7 @@ ls -lh requirements/*.zip
 ```
 Or run the automated checker script:
 ```bash
-python3 codes/extract_data.py --check
+python3 -m codes.extract_data --check
 ```
 
 ### 2. Common Issues & Troubleshooting

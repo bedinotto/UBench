@@ -65,7 +65,7 @@ git add requirements/requirements.cuda.lock && git commit -m "chore(deps): CUDA 
 # runs `uv pip sync requirements/requirements.cuda.lock --torch-backend=<tag>`,
 # compiling the lock first if the file above is absent. (Override the backend
 # with UBENCH_TORCH_BACKEND=cu121|cu118 if auto-detect is wrong.)
-python codes/setup.py                       # validates env + installs from the CUDA lock
+python -m codes.setup                       # validates env + installs from the CUDA lock
 ```
 
 - [ ] `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`
@@ -82,11 +82,11 @@ python codes/setup.py                       # validates env + installs from the 
 > °C). If `data/processed/` already exists from an earlier run, force a rebuild:
 >
 > ```bash
-> python codes/main_pipeline.py --models unet --epochs 2 --force-preprocess
+> python -m codes.main_pipeline --models unet --epochs 2 --force-preprocess
 > ```
 
 ```bash
-python codes/main_pipeline.py --models unet --epochs 2
+python -m codes.main_pipeline --models unet --epochs 2
 ```
 
 - [ ] Preprocessing runs automatically (no manual `preprocess_data.py`);
@@ -114,7 +114,7 @@ Interrupt a full run mid-training, then resume it:
 ```bash
 ./run.sh                         # let a couple of folds/epochs complete, then Ctrl-C
 #   note the run id printed near the top, e.g. 20260717_1330
-python codes/main_pipeline.py --resume <run_id>   # continues; or ./run.sh ... --resume <run_id>
+python -m codes.main_pipeline --resume <run_id>   # continues; or ./run.sh ... --resume <run_id>
 ```
 
 - [ ] `--resume <run_id>` reuses `outputs/<run_id>` + `logs/<run_id>` — **no new
