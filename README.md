@@ -35,10 +35,10 @@ A comprehensive, production-ready, and fully automated computer vision pipeline 
 
 ## 📋 Prerequisites & Requirements
 
-### ⚠️ Python Version (Critical)
-PyTorch CUDA wheels are only published for **Python 3.8 – 3.12**. Python 3.13+ is **not supported** — pip will silently install the CPU-only build, causing a "CUDA not available" failure at runtime.
+### ⚠️ Python Version
+The default install is **CPU** and works on **Python 3.10–3.13** — the committed lockfile is resolved for the 3.10 floor and CI runs on 3.11. The **CUDA/GPU** path is narrower: PyTorch publishes CUDA wheels only for **3.8–3.12**, so a GPU **training box** must use **Python 3.10 or 3.11** (`codes/setup.py` hard-errors the CUDA path on 3.13+).
 > [!IMPORTANT]
-> **Recommended: Python 3.10 or 3.11**
+> **CPU (dev/CI): Python 3.10–3.13. GPU training box: Python 3.10 or 3.11.**
 > Download from: https://www.python.org/downloads/
 
 ### 📦 Git LFS (Large File Storage)
@@ -56,21 +56,22 @@ This project tracks large dataset files (such as `.zip` files in `requirements/`
 ### Software Requirements
 | Dependency | Version | Notes |
 |------------|---------|-------|
-| **Python** | 3.8 – 3.12 | 3.13+ is **not supported** |
+| **Python** | 3.10–3.13 (CPU) · 3.10/3.11 (CUDA) | CUDA wheels exist only for 3.8–3.12, so the GPU path needs 3.10/3.11 |
 | **Git LFS** | 3.0+ recommended | Required to retrieve large ZIP archives and dataset files (e.g. in `requirements/`) |
 | **NVIDIA Driver** | Latest recommended | Required for CUDA. Install from [nvidia.com/drivers](https://www.nvidia.com/download/index.aspx) |
-| **CUDA** | 11.8 or 12.1 | Installed automatically via PyTorch CUDA wheel |
+| **CUDA** | 11.8 or 12.1 | On the GPU box, `setup.py` installs the matching CUDA torch (`cu118`/`cu121`) from the lock |
 | **OS** | Windows 10/11, Linux, or macOS | `run.bat` for Windows, `run.sh` for Linux/Mac |
 
-### Python Packages (auto-installed by setup)
-PyTorch with CUDA support is automatically installed by `codes/setup.py` using the correct index URL for your GPU driver. All other packages come from `requirements/requirements.txt`:
+### Python Packages (installed from a lockfile)
+All dependencies — **including `torch`/`torchvision`** — are declared in **one** place, the `[project]` table of `pyproject.toml`, and installed from a **generated lockfile** with [`uv`](https://docs.astral.sh/uv/), never from loose version ranges (UB-20b):
 ```
-opencv-python, Pillow, numpy, pandas, scipy,
+torch, torchvision, torchmetrics, timm,
+opencv-python, Pillow, albumentations, numpy, pandas, scipy,
 scikit-learn, tqdm, matplotlib, seaborn,
-PyYAML, psutil, GPUtil, nvidia-ml-py
+PyYAML, pydantic, psutil, GPUtil, nvidia-ml-py
 ```
 > [!NOTE]
-> `torch`, `torchvision`, and `torchaudio` are **not** in `requirements.txt`. They are installed separately with CUDA support by the setup script to avoid the CPU-only default from plain `pip install torch`.
+> `requirements/requirements.txt` is now only a pointer — the dependency source of truth is `pyproject.toml`, and the pinned closure lives in `requirements/requirements.cpu.lock` (CPU, committed; a CUDA lock is generated on the GPU box). `codes/setup.py` installs with `uv pip sync <lock>` (backend-aware; no `--force-reinstall --no-deps`, and it refuses to install into system Python).
 
 ---
 
@@ -107,7 +108,18 @@ data/
 ```
 **The pipeline automatically discovers all S1-S10 directories!**
 
-### Step 2: Run the Pipeline
+### Step 2: Set Up the Environment & Run the Pipeline
+First create a virtual environment and install the pinned dependencies with [`uv`](https://docs.astral.sh/uv/) (CPU — dev/CI):
+```bash
+uv venv && source .venv/bin/activate
+uv pip sync requirements/requirements.cpu.lock --torch-backend=cpu
+```
+> On a **GPU training box**, install the CUDA lock instead — see
+> `docs/phase1_realdata_checklist.md` (or let `codes/setup.py`, invoked by
+> `run.sh`, generate and install it for you).
+
+Then run the pipeline:
+
 **On Linux/Mac:**
 ```bash
 chmod +x run.sh
@@ -132,46 +144,52 @@ run.bat
 ### Step 3: Check Results
 After training completes, find your results in:
 ```text
-outputs/
-├── models/              # Trained weights (.pth files)
-├── plots/               # Training curves and comparisons
-└── benchmark_comparison.csv
+outputs/<run_id>/                 # one timestamped dir per ./run.sh invocation
+├── models/                       # best_<model>_fold_<n>_model.pth (selected by val mIoU)
+├── plots/                        # training curves and comparison plots
+├── checkpoints/                  # resume checkpoints
+└── benchmark_comparison.csv      # CV + TEST metrics for all models
+outputs/latest -> outputs/<run_id>   # symlink to the newest run
 
-log/
-├── hardware_profile.json
+logs/<run_id>/
+├── pipeline.log
+├── run_metadata.json             # git SHA, torch/CUDA, seed, lockfile hash, effective config
+├── hardware_profile.json         # detected GPU/CPU profile + chosen batch sizes
 ├── *_metrics.json
 └── benchmark_report.txt
 ```
 
 ### 🎯 Expected Console Output
-After starting a successful run, you will see output like this:
+After starting a successful run, you will see output like this (illustrative — labels and structure, not specific metric values):
 ```text
 DISCOVERING AND LOADING DATASETS
 ======================================================================
 ✅ Found 3 dataset(s): S1, S2, S3
-[...]
-======================================================================
-✅ TOTAL: 1846 samples across 3 dataset(s)
+✅ TOTAL: <N> samples across 3 dataset(s)
+   Normalization: fixed_range [20.0, 40.0] °C
+   Leave-subjects-out CV: K folds over whole-subject groups
+   (any held-out test_subjects are excluded from every fold)
 ======================================================================
 
-TRAINING: U-Net
+TRAINING: U-Net            [recipe: Adam + ReduceLROnPlateau]
 ======================================================================
-[Training progress bars...]
+[fold 1/K ... best-val-mIoU checkpoint saved]
 ✅ Training completed
 
-TRAINING: TransUNet
+TRAINING: TransUNet        [recipe: AdamW + warmup→cosine]
 ======================================================================
-[Training progress bars...]
+[Training progress...]
 ✅ Training completed
 
-TRAINING: Swin-UNet++
+TRAINING: Swin-UNet++      [recipe: AdamW + warmup→cosine]
 ======================================================================
-[Training progress bars...]
+[Training progress...]
 ✅ Training completed
 
 BENCHMARKING
 ======================================================================
-[Comparison results...]
+[CV section:   per-model mean ± std across folds]
+[TEST section: fold-models scored on held-out test_subjects, if set]
 ✅ Benchmark completed
 
 ✅✅✅ PIPELINE COMPLETED SUCCESSFULLY ✅✅✅
@@ -199,9 +217,11 @@ UBench/
 ├── run.sh                         # Linux/Mac pipeline entry point
 ├── run.bat                        # Windows pipeline entry point
 ├── README.md                      # Consolidated project documentation
+├── pyproject.toml                 # dependency source of truth + tooling config
 │
 ├── requirements/
-│   ├── requirements.txt           # Python dependencies (excl. PyTorch)
+│   ├── requirements.txt           # pointer — deps now live in pyproject.toml
+│   ├── requirements.cpu.lock      # pinned CPU dependency lock (uv pip sync)
 │   └── <YourDataset>.zip          # Place dataset archives here
 │
 ├── codes/                         # All Python source code
@@ -230,13 +250,16 @@ UBench/
 │   ├── S1_polygonal_masks.json    # Auto-generated polygon masks
 │   └── S2/, S2.csv, ...           # Additional datasets (up to S10)
 │
-├── outputs/                       # Timestamped training outputs
+├── outputs/                       # Timestamped training outputs (+ outputs/latest symlink)
 │   └── <run_timestamp>/
-│       ├── models/                # Trained .pth checkpoints
-│       └── plots/                 # IoU/loss curves & overlay visualizations
+│       ├── models/                # Trained .pth checkpoints (best by val mIoU)
+│       ├── plots/                 # IoU/loss curves & overlay visualizations
+│       └── benchmark_comparison.csv
 │
 └── logs/                          # Timestamped run logs
     └── <run_timestamp>/
+        ├── pipeline.log           # Full pipeline console log
+        ├── run_metadata.json      # git SHA, torch/CUDA, seed, lockfile hash, effective config
         ├── extract.log            # Data extraction traces
         ├── hardware_profile.json  # Detected hardware specifications
         ├── *_metrics.json         # Per-epoch training metrics per model
@@ -278,11 +301,12 @@ data/
 
 ### 1. What Happens Automatically
 When you run the pipeline:
-- **Environment Setup**: Python versions, CUDA presence, and pip are checked. Dependencies are installed.
+- **Environment Setup**: Python/CUDA/Git-LFS are checked; dependencies are installed from the committed lockfile via `uv pip sync` (see § Python Packages).
 - **Hardware Detection**: Detects GPU capabilities and dynamically scales batch sizes and mixed-precision strategies.
 - **Dataset Discovery**: Extracts ZIPs from `requirements/` and automatically maps files using regex patterns, skipping corrupted files.
-- **Model Training**: Runs uniform training with `CombinedLoss` and `ReduceLROnPlateau`.
-- **Benchmarking**: Compares speeds, parameters, losses, and VRAM footprints.
+- **Preprocessing**: Converts raw TIFFs to Celsius `.npy` crops + `metadata.csv` (auto-run when `data/processed/metadata.csv` is missing; `--force-preprocess` rebuilds).
+- **Model Training**: Shared `CombinedLoss` (CE+Dice) loop with **per-family recipes** — U-Net uses Adam + `ReduceLROnPlateau`; the transformer family uses AdamW + linear-warmup→cosine. The best checkpoint is selected by **val mIoU**.
+- **Benchmarking**: Compares speeds, parameters, losses, and VRAM footprints (cross-validation + held-out TEST).
 
 ### 2. Execution Flow Diagram
 ```text
@@ -291,8 +315,8 @@ run.sh / run.bat
     ├──> codes/setup.py
     │    ├─ Check Python version
     │    ├─ Check pip & Git LFS
-    │    ├─ Install dependencies
-    │    ├─ Check CUDA
+    │    ├─ Install deps from the lockfile (uv pip sync)
+    │    ├─ Check CUDA (GPU path)
     │    └─ Create directories
     │
     └──> codes/main_pipeline.py
@@ -302,21 +326,26 @@ run.sh / run.bat
          │    ├─ Validate requirements
          │    └─ Optimize batch sizes
          │
+         ├──> codes/preprocess_data.py        # auto-run when data/processed/metadata.csv is absent (UB-01)
+         │    └─ Raw TIFF → Celsius .npy crops + metadata.csv
+         │
          ├──> codes/unified_data.py
          │    ├─ Discover S1-S10 directories
          │    ├─ Load all annotations
-         │    ├─ Combine datasets
-         │    └─ Create data loaders
+         │    ├─ Leave-subjects-out GroupKFold loaders
+         │    └─ Hold out test_subjects (opt-in)
          │
          ├──> codes/unified_training.py
-         │    └─ Train each model
-         │         ├─ codes/unet_v2.py
-         │         ├─ codes/transunet.py
-         │         └─ codes/swin_unet_plus_plus.py
+         │    └─ Train each model (per-family recipe; best by val mIoU)
+         │         ├─ codes/unet_v2.py                 (unet)
+         │         ├─ codes/transunet.py               (transunet)
+         │         ├─ codes/swin_unet_plus_plus.py     (swin)
+         │         ├─ codes/swin_pretrained.py         (swin_pretrained, opt-in)
+         │         └─ codes/transunet_pretrained.py    (transunet_pretrained, opt-in)
          │
          └──> codes/benchmark_models.py
               ├─ Load trained models
-              ├─ Calculate metrics
+              ├─ CV + TEST metrics (mean ± std)
               ├─ Generate plots
               └─ Create reports
 ```
@@ -425,13 +454,16 @@ python3 -m codes.extract_data --check
 **"CUDA not available" / Setup stops at hardware checks**
 - This usually means PyTorch was installed without CUDA support (CPU-only build).
 - Run `nvidia-smi` to check if NVIDIA drivers are present. If missing, install drivers from [nvidia.com/drivers](https://www.nvidia.com/download/index.aspx).
-- Run the setup utility to install the correct CUDA-supported PyTorch wheel:
+- Re-run setup pinned to the CUDA backend (installs from the CUDA lock):
   ```bash
-  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+  UBENCH_TORCH_BACKEND=cu121 python -m codes.setup   # or cu118 for older drivers
   ```
 
-**"Unsupported Python version"**
-- You are running Python 3.13+. PyTorch does not publish CUDA wheels for Python 3.13+. Please download and install Python 3.10 or 3.11.
+**"Unsupported Python version" (CUDA path)**
+- CUDA torch wheels are published only for Python 3.8–3.12, so a **GPU** box needs Python 3.10 or 3.11. The **CPU** install works on Python 3.13 — use it if you don't need CUDA:
+  ```bash
+  uv pip sync requirements/requirements.cpu.lock --torch-backend=cpu
+  ```
 
 **"Git LFS pointer detected" or "Not a valid ZIP file"**
 - The repository ZIP files are placeholder files because Git LFS was not initialized.
