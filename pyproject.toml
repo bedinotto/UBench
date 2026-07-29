@@ -9,7 +9,7 @@ description = "Thermal facial region segmentation benchmark (U-Net / TransUNet /
 # (see requirements/requirements.cpu.lock and codes/setup.py) — NOT by a second
 # requirements file. Install from the generated lock, never from these loose
 # floors (see CLAUDE.md §3.1).
-requires-python = ">=3.10,<3.14"  # GPU boxes 3.10/3.11, CI 3.11, dev/sandbox up to 3.13
+requires-python = ">=3.10,<3.13"  # GPU boxes 3.10/3.11, CI 3.11, dev/sandbox up to 3.13
 dependencies = [
     # Core deep learning
     "torch>=2.0",

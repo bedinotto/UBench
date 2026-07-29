@@ -1,0 +1,80 @@
+diff --git a/.claude/settings.json b/.claude/settings.json
+index 2976dea..298b7a3 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -20,5 +20,13 @@
+         ]
+       }
+     ]
++  },
++  "enabledPlugins": {
++    "superpowers@claude-plugins-official": true,
++    "context7@claude-plugins-official": true,
++    "skill-creator@claude-plugins-official": true,
++    "code-simplifier@claude-plugins-official": true,
++    "security-guidance@claude-plugins-official": true,
++    "claude-md-management@claude-plugins-official": true
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/pyproject.toml b/pyproject.toml
+index 19cd755..d60d5de 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -9,7 +9,7 @@ description = "Thermal facial region segmentation benchmark (U-Net / TransUNet /
+ # (see requirements/requirements.cpu.lock and codes/setup.py) — NOT by a second
+ # requirements file. Install from the generated lock, never from these loose
+ # floors (see CLAUDE.md §3.1).
+-requires-python = ">=3.10,<3.14"  # GPU boxes 3.10/3.11, CI 3.11, dev/sandbox up to 3.13
++requires-python = ">=3.10,<3.13"  # GPU boxes 3.10/3.11, CI 3.11, dev/sandbox up to 3.13
+ dependencies = [
+     # Core deep learning
+     "torch>=2.0",
+diff --git a/run.sh b/run.sh
+index 9689dff..7286721 100755
+--- a/run.sh
++++ b/run.sh
+@@ -17,16 +17,40 @@ echo "THERMAL FACE DETECTION - AUTOMATED PIPELINE"
+ echo "================================================================================"
+ echo ""
+ 
++PYTHON_CMD="python3"
++
++# 1. Install uv automatically if it isn't installed
++if ! command -v uv &> /dev/null; then
++    curl -LsSf https://astral.sh/uv/install.sh | sh
++    source $HOME/.cargo/env
++fi
++
++# 2. Tell uv to automatically fetch Python 3.11 and create the .venv
++uv venv --python 3.11 .venv
++
++# 3. Activate the environment
++source .venv/bin/activate
++
+ # Check if Python 3 is available
+ if ! command -v python3 &> /dev/null; then
+     echo -e "${RED}ERROR: Python 3 is not installed!${NC}"
+-    echo "Please install Python 3.8 or higher"
++    echo "Please install UV to install Python 3.11 - see https://astral.sh/uv/install.sh"
+     exit 1
+ fi
+ 
+-PYTHON_CMD="python3"
++# Look for specific compatible versions first
++if command -v python3.11 &>/dev/null; then
++    PYTHON_CMD="python3.11"
++elif command -v python3.10 &>/dev/null; then
++    PYTHON_CMD="python3.10"
++fi
++
++$PYTHON_CMD -m venv .venv
++source .venv/bin/activate
+ echo -e "${GREEN}✓${NC} Python 3 found: $($PYTHON_CMD --version)"
+ 
++export NO_ALBUMENTATIONS_UPDATE=1
++
+ # Create a timestamp for this run and share it with the Python pipeline so
+ # shell and Python use ONE run id — one outputs/<ts> and one logs/<ts> per
+ # invocation (UB-14). Precedence in Python: --resume > UBENCH_RUN_ID > fresh.

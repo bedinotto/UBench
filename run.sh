@@ -17,15 +17,39 @@ echo "THERMAL FACE DETECTION - AUTOMATED PIPELINE"
 echo "================================================================================"
 echo ""
 
+PYTHON_CMD="python3"
+
+# 1. Install uv automatically if it isn't installed
+if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source $HOME/.cargo/env
+fi
+
+# 2. Tell uv to automatically fetch Python 3.11 and create the .venv
+uv venv --python 3.11 .venv
+
+# 3. Activate the environment
+source .venv/bin/activate
+
 # Check if Python 3 is available
 if ! command -v python3 &> /dev/null; then
     echo -e "${RED}ERROR: Python 3 is not installed!${NC}"
-    echo "Please install Python 3.8 or higher"
+    echo "Please install UV to install Python 3.11 - see https://astral.sh/uv/install.sh"
     exit 1
 fi
 
-PYTHON_CMD="python3"
+# Look for specific compatible versions first
+if command -v python3.11 &>/dev/null; then
+    PYTHON_CMD="python3.11"
+elif command -v python3.10 &>/dev/null; then
+    PYTHON_CMD="python3.10"
+fi
+
+$PYTHON_CMD -m venv .venv
+source .venv/bin/activate
 echo -e "${GREEN}✓${NC} Python 3 found: $($PYTHON_CMD --version)"
+
+export NO_ALBUMENTATIONS_UPDATE=1
 
 # Create a timestamp for this run and share it with the Python pipeline so
 # shell and Python use ONE run id — one outputs/<ts> and one logs/<ts> per
