@@ -1,0 +1,15 @@
+{
+  "gpu_name": "NVIDIA GeForce GTX 1660 Ti",
+  "gpu_memory_gb": 6.0,
+  "cpu_count": 16,
+  "ram_gb": 15.527313232421875,
+  "device": "cuda",
+  "batch_sizes": {
+    "unet": 8,
+    "transunet": 6,
+    "swin_unet_plus_plus": 6,
+    "swin_pretrained": 4,
+    "transunet_pretrained": 2
+  },
+  "num_workers": 4
+}

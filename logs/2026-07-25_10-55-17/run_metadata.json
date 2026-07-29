@@ -1,0 +1,46 @@
+{
+  "run_id": "2026-07-25_10-55-17",
+  "git_sha": "5a5b4b8c9ba0a1c025ef927a955a19a262b47798",
+  "git_dirty": true,
+  "torch_version": "2.5.1+cu121",
+  "cuda_available": true,
+  "cuda_version": "12.1",
+  "gpu_name": "NVIDIA GeForce GTX 1660 Ti",
+  "random_seed": 42,
+  "deterministic": true,
+  "models_to_train": [
+    "unet",
+    "transunet",
+    "swin"
+  ],
+  "recipes": {
+    "unet": {
+      "optimizer": "adam",
+      "scheduler": "reduce_on_plateau"
+    },
+    "transunet": {
+      "optimizer": "adamw",
+      "scheduler": "warmup_cosine"
+    },
+    "swin": {
+      "optimizer": "adamw",
+      "scheduler": "warmup_cosine"
+    }
+  },
+  "preprocessing": {
+    "normalization": "fixed_range",
+    "fixed_range_celsius": [
+      20.0,
+      40.0
+    ]
+  },
+  "num_epochs": 100,
+  "k_folds": 5,
+  "test_subjects": [],
+  "image_size": [
+    256,
+    256
+  ],
+  "num_classes": 10,
+  "lockfile_hash": "bbea99b0fdbd8434c18767526679493bdc1763a3e4df0462f32b2720d4c0384d"
+}
