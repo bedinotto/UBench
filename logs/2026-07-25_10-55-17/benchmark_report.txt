@@ -1,0 +1,122 @@
+================================================================================
+COMPREHENSIVE MODEL BENCHMARK REPORT
+================================================================================
+
+SUMMARY TABLE
+--------------------------------------------------------------------------------
+      Model     mIoU  Dice Score  Inference (ms)       FPS  Params (M)  Size (MB)  VRAM @ batch=4 (fixed, inference)
+      U-Net 0.419077    0.577114       23.538758 42.483125   31.042954 118.419472                         586.748535
+  TransUNet 0.447127    0.605409       26.951206 37.104091  105.708938 403.247597                         917.146484
+Swin-UNet++ 0.374344    0.525371       11.052897 90.474014   40.920010 156.097450                         937.105957
+
+BEST MODELS BY METRIC
+--------------------------------------------------------------------------------
+Highest mIoU:     TransUNet (0.4471)
+Highest Dice:     TransUNet (0.6054)
+Fastest:          Swin-UNet++ (11.05 ms)
+Highest FPS:      Swin-UNet++ (90.47 FPS)
+Smallest:         U-Net (31.0M params)
+Lowest VRAM:      U-Net (587 MB, VRAM @ batch=4 (fixed, inference))
+
+DETAILED PER-MODEL ANALYSIS
+================================================================================
+
+U-Net
+--------------------------------------------------------------------------------
+Architecture Complexity:
+  Parameters:       31,042,954
+  Model Size:       118.42 MB
+  VRAM @ batch=4 (fixed, inference): 586.75 MB
+
+Accuracy — CROSS-VALIDATION (hard, argmax, macro excl. absent; ± cross-fold — UB-11/M2):
+  mIoU (macro):     0.4191 ± 0.0490
+  Dice (macro):     0.5771 ± 0.0504
+  Loss (CE+Dice):   0.4122
+
+Speed Metrics (warm-up discarded, synced on CUDA — UB-09/M3):
+  Inference Time:   23.54 ± 0.02 ms/image
+  Throughput (FPS): 42.48
+  Conditions:       warm-up=5, measured=205 batches, batch_size=8, dtype=torch.float32, device=cuda, torch=2.5.1+cu121
+
+Per-Class IoU:
+  background                    : 0.8826 ± 0.0177
+  Contorno inferior do Rosto    : 0.7162 ± 0.0357
+  Sombrancelha esquerda         : 0.4176 ± 0.0532
+  Sombrancelha direita          : 0.3012 ± 0.0584
+  Nariz                         : 0.3771 ± 0.0661
+  Olho esquerdo                 : 0.4958 ± 0.0405
+  Olho direito                  : 0.4190 ± 0.0695
+  Boca                          : 0.2891 ± 0.0511
+  Labios                        : 0.2666 ± 0.0445
+  Testa                         : 0.4891 ± 0.0654
+
+================================================================================
+
+TransUNet
+--------------------------------------------------------------------------------
+Architecture Complexity:
+  Parameters:       105,708,938
+  Model Size:       403.25 MB
+  VRAM @ batch=4 (fixed, inference): 917.15 MB
+
+Accuracy — CROSS-VALIDATION (hard, argmax, macro excl. absent; ± cross-fold — UB-11/M2):
+  mIoU (macro):     0.4471 ± 0.0441
+  Dice (macro):     0.6054 ± 0.0432
+  Loss (CE+Dice):   0.3899
+
+Speed Metrics (warm-up discarded, synced on CUDA — UB-09/M3):
+  Inference Time:   26.95 ± 0.02 ms/image
+  Throughput (FPS): 37.10
+  Conditions:       warm-up=5, measured=275 batches, batch_size=6, dtype=torch.float32, device=cuda, torch=2.5.1+cu121
+
+Per-Class IoU:
+  background                    : 0.8976 ± 0.0150
+  Contorno inferior do Rosto    : 0.7623 ± 0.0331
+  Sombrancelha esquerda         : 0.4285 ± 0.0555
+  Sombrancelha direita          : 0.3213 ± 0.0487
+  Nariz                         : 0.4150 ± 0.0557
+  Olho esquerdo                 : 0.5194 ± 0.0528
+  Olho direito                  : 0.4314 ± 0.0610
+  Boca                          : 0.3225 ± 0.0385
+  Labios                        : 0.3104 ± 0.0385
+  Testa                         : 0.5133 ± 0.0598
+
+================================================================================
+
+Swin-UNet++
+--------------------------------------------------------------------------------
+Architecture Complexity:
+  Parameters:       40,920,010
+  Model Size:       156.10 MB
+  VRAM @ batch=4 (fixed, inference): 937.11 MB
+
+Accuracy — CROSS-VALIDATION (hard, argmax, macro excl. absent; ± cross-fold — UB-11/M2):
+  mIoU (macro):     0.3743 ± 0.0408
+  Dice (macro):     0.5254 ± 0.0448
+  Loss (CE+Dice):   0.4324
+
+Speed Metrics (warm-up discarded, synced on CUDA — UB-09/M3):
+  Inference Time:   11.05 ± 0.02 ms/image
+  Throughput (FPS): 90.47
+  Conditions:       warm-up=5, measured=275 batches, batch_size=6, dtype=torch.float32, device=cuda, torch=2.5.1+cu121
+
+Per-Class IoU:
+  background                    : 0.8884 ± 0.0134
+  Contorno inferior do Rosto    : 0.7342 ± 0.0276
+  Sombrancelha esquerda         : 0.3288 ± 0.0475
+  Sombrancelha direita          : 0.1931 ± 0.0415
+  Nariz                         : 0.3359 ± 0.0567
+  Olho esquerdo                 : 0.4788 ± 0.0408
+  Olho direito                  : 0.2325 ± 0.0460
+  Boca                          : 0.2983 ± 0.0505
+  Labios                        : 0.2800 ± 0.0416
+  Testa                         : 0.4875 ± 0.0706
+
+================================================================================
+
+RECOMMENDATIONS
+================================================================================
+For Highest Accuracy:     Use TransUNet
+For Real-time Processing: Use Swin-UNet++
+For Best Efficiency:      Use Swin-UNet++
+================================================================================
