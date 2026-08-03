@@ -112,20 +112,43 @@ _VRAM_COL = f"VRAM @ batch={MEMORY_PROBE_BATCH_SIZE} (fixed, inference)"
 def probe_peak_memory(model: nn.Module, device, image_size,
                       in_channels: int = 1,
                       batch_size: int = MEMORY_PROBE_BATCH_SIZE) -> Optional[float]:
-    """Peak GPU memory (MB) for one inference forward on a FIXED synthetic batch.
+    """Inference VRAM (MB) for one forward on a FIXED synthetic batch.
 
-    Comparability fix (UB-10, M3): the old code read peak VRAM *during each
-    model's evaluation pass*, at that model's hardware-selected batch size, so
-    the figures were not comparable across models. This probe instead runs a
-    single forward on a synthetic ``(batch_size, in_channels, H, W)`` tensor —
-    the same shape for every model, independent of the loader or the model's
-    training batch — so the number reflects the model, deterministically.
+    Two comparability defects had to be fixed here, and only the first was
+    fixed originally:
 
-    Inference-mode and isolated: ``model.eval()`` + ``torch.no_grad()`` (the
-    same mode as :func:`timed_inference`), ``reset_peak_memory_stats()``
-    immediately before the single forward and ``max_memory_allocated()``
-    immediately after. Run this as its own step so it neither perturbs nor is
-    perturbed by the timing / metrics passes.
+    * **Fixed batch (UB-10, M3)** — the old code read peak VRAM *during each
+      model's evaluation pass*, at that model's hardware-selected batch size,
+      so the figures were not comparable across models. This probe runs a
+      single forward on a synthetic ``(batch_size, in_channels, H, W)`` tensor
+      — the same shape for every model, independent of the loader or the
+      model's training batch.
+    * **Isolation (UB-28)** — fixing the batch was not sufficient.
+      ``max_memory_allocated()`` is a *device-wide* counter and
+      ``reset_peak_memory_stats()`` re-seeds the peak to the currently-allocated
+      total, not to zero. :func:`run_benchmark` holds every model in
+      ``models_dict`` and :meth:`ModelBenchmark.load_model` moves each onto the
+      GPU without ever moving it off, so reading the counter directly charged
+      each model for every model benchmarked before it. The inflation grew
+      monotonically with probe order (+29 / +317 / +625 MB on the reported run)
+      and **inverted** the VRAM ordering of the three architectures.
+
+    The reported figure is therefore ``own parameters + this forward's working
+    set``, where the working set is a **delta** (``max_memory_allocated`` minus
+    the pre-forward ``memory_allocated`` baseline) and is thus immune to
+    whatever else happens to be resident. The baseline is taken *before* the
+    probe input is allocated, so the input counts toward the working set.
+
+    A **warm-up forward is discarded** before measuring, for the same reason
+    :func:`timed_inference` discards warm-up batches (UB-09): the first CUDA
+    forward in a process allocates cuDNN/cuBLAS handles and workspaces, which
+    measured ~7.8 MB higher than every subsequent call on the reference box.
+    With the warm-up discarded the probe is bit-reproducible across repeats and
+    unchanged by 300 MB of unrelated resident ballast (verified).
+
+    Inference-mode: ``model.eval()`` + ``torch.no_grad()`` (the same mode as
+    :func:`timed_inference`). Run this as its own step so it neither perturbs
+    nor is perturbed by the timing / metrics passes.
 
     Args:
         model: model to probe (put into eval mode here).
@@ -135,23 +158,39 @@ def probe_peak_memory(model: nn.Module, device, image_size,
         batch_size: fixed probe batch size (shared across models).
 
     Returns:
-        Peak allocated MB on CUDA, or ``None`` on CPU — there is nothing to
-        measure without a GPU, and reporting 0 would fabricate a number (R10).
-        Callers render ``None`` as "n/a (CPU)".
+        Model weights + inference working set in MB on CUDA, or ``None`` on CPU
+        — there is nothing to measure without a GPU, and reporting 0 would
+        fabricate a number (R10). Callers render ``None`` as "n/a (CPU)".
     """
     device = torch.device(device)
     if device.type != "cuda":
         return None
 
     h, w = int(image_size[0]), int(image_size[1])
-    probe_input = torch.zeros((batch_size, in_channels, h, w), device=device)
 
     model.eval()
+
+    # Warm-up forward, discarded: the first CUDA forward in a process allocates
+    # cuDNN/cuBLAS handles and workspaces (UB-09's rationale, applied to memory).
+    with torch.no_grad():
+        model(torch.zeros((batch_size, in_channels, h, w), device=device))
+
     torch.cuda.empty_cache()
+    # Baseline BEFORE the probe input exists, so the delta below covers the
+    # input tensor plus every activation this forward allocates (UB-28).
+    baseline_bytes = torch.cuda.memory_allocated(device)
     torch.cuda.reset_peak_memory_stats(device)
+    probe_input = torch.zeros((batch_size, in_channels, h, w), device=device)
     with torch.no_grad():
         model(probe_input)
-    return torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+    working_set_bytes = torch.cuda.max_memory_allocated(device) - baseline_bytes
+
+    # Attribute this model's own weights explicitly rather than inheriting
+    # them from a device-wide counter that also holds every other model.
+    own_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    own_bytes += sum(b.numel() * b.element_size() for b in model.buffers())
+
+    return (own_bytes + working_set_bytes) / (1024 ** 2)
 
 
 def _format_vram(mb: Optional[float]) -> str:
