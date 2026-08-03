@@ -160,16 +160,19 @@ def _generate_annotations():
     """
     Generate bounding boxes and polygonal masks from the CSV files
     using generate_boxes_polygons.py functions.
+
+    Datasets whose ``S{n}_polygonal_masks.json`` already exists are skipped, so
+    re-running this never rewrites annotations a training run was built on.
+
+    An unresolvable landmark scheme raises out of here rather than being
+    swallowed (R4): the old bare ``except ImportError`` turned a broken import
+    into a silent "no annotations generated", which downstream reads as an
+    empty dataset instead of a failure.
     """
-    try:
-        from codes.generate_boxes_polygons import (
-            generate_bounding_boxes,
-            generate_polygonal_masks,
-        )
-    except ImportError:
-        print("⚠️  Could not import generate_boxes_polygons — "
-              "skipping annotation generation")
-        return
+    from codes.generate_boxes_polygons import (
+        generate_bounding_boxes,
+        generate_polygonal_masks,
+    )
 
     csv_files = sorted(DATA_DIR.glob("S*.csv"))
     valid_files = [

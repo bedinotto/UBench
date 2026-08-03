@@ -45,6 +45,16 @@ LANDMARK_MAPPINGS_73 = {
     "Testa": list(range(68, 73)),
 }
 
+# WARNING (UB-27/UB-29): the two lateral pairs below are double-booked — both
+# eyebrows claim indices 12-15 and both eyes claim 22-26. All 43 indices are
+# already consumed with no gaps, which means the real Charlotte-ThermalFace
+# 43-point (profile) scheme annotates only the *visible* side of the face, and
+# which side that is is not encoded in the data. Rasterizing both names from one
+# index range makes the later-painted side (right, per REGION_NAMES order in
+# create_segmentation_mask) erase the earlier one, so one class would be absent
+# from every profile frame. `_resolve_landmark_mapping` therefore REFUSES this
+# mapping instead of emitting knowingly-corrupt masks (R4). Supplying the real
+# per-side index ranges is what unblocks profile annotation.
 LANDMARK_MAPPINGS_43 = {
     "Contorno inferior do Rosto": list(range(0, 12)),
     "Sombrancelha esquerda": list(range(12, 16)),
@@ -57,6 +67,70 @@ LANDMARK_MAPPINGS_43 = {
     "Testa": list(range(39, 43)),
 }
 
+_LANDMARK_MAPPINGS = {73: LANDMARK_MAPPINGS_73, 43: LANDMARK_MAPPINGS_43}
+
+
+def _declared_landmark_columns(columns) -> int:
+    """Count the ``x{i}`` landmark columns a CSV *declares* in its header."""
+    return sum(1 for col in columns if col.startswith("x") and col[1:].isdigit())
+
+
+def _count_filled_landmarks(row, declared: int) -> int:
+    """Count the ``(x{i}, y{i})`` pairs a single row actually populates.
+
+    This — not the header width — is what identifies the annotation scheme of
+    an individual image (UB-27). Every ``S{n}.csv`` declares all 73 columns for
+    every row; profile rows simply leave indices 43..72 empty.
+    """
+    return sum(
+        1 for i in range(declared)
+        if pd.notna(row.get(f"x{i}")) and pd.notna(row.get(f"y{i}"))
+    )
+
+
+def _resolve_landmark_mapping(n_filled: int, source: str, image_id) -> dict:
+    """Return the region→indices mapping for a row with ``n_filled`` landmarks.
+
+    Args:
+        n_filled: landmark pairs actually populated in this row.
+        source: CSV path, for error messages.
+        image_id: image identifier, for error messages.
+
+    Returns:
+        The mapping for this row's annotation scheme.
+
+    Raises:
+        ValueError: if the landmark count is not a known scheme, or if the
+            resolved mapping assigns the same index range to two different
+            regions — both are silent-corruption paths, so they raise (R4).
+    """
+    mapping = _LANDMARK_MAPPINGS.get(n_filled)
+    if mapping is None:
+        raise ValueError(
+            f"{source} image {image_id!r}: {n_filled} landmark pairs is not a "
+            f"known annotation scheme (expected one of "
+            f"{sorted(_LANDMARK_MAPPINGS)}). Falling back to the 73-point "
+            f"mapping would rasterize regions from indices the row does not "
+            f"have (UB-27); fix the annotation or add the scheme explicitly."
+        )
+
+    by_range: dict[tuple, str] = {}
+    for region, indices in mapping.items():
+        key = tuple(indices)
+        if key in by_range:
+            raise ValueError(
+                f"{source} image {image_id!r}: the {n_filled}-point mapping "
+                f"assigns the same landmark indices {list(key)} to both "
+                f"{by_range[key]!r} and {region!r}. Rasterization paints "
+                f"regions in REGION_NAMES order, so the later class would "
+                f"silently erase the earlier one and one class would be absent "
+                f"from every {n_filled}-point frame (UB-29). Supply the real "
+                f"per-side index ranges for the {n_filled}-point scheme in "
+                f"LANDMARK_MAPPINGS_{n_filled} before generating these masks."
+            )
+        by_range[key] = region
+    return mapping
+
 def generate_polygonal_masks(input_csv, output_json):
     """
     Generates polygonal masks for different facial regions based on landmark coordinates.
@@ -68,23 +142,21 @@ def generate_polygonal_masks(input_csv, output_json):
     df = pd.read_csv(input_csv)
     polygons = {}
 
-    # Read the header separately to determine the number of landmark points
-    with open(input_csv, 'r') as f:
-        header = f.readline().strip().split(',')
-
-    # Calculate the number of landmark points (e.g., 43 or 73)
-    num_points = sum(1 for col in header if col.startswith('x') and col[1:].isdigit())
-
-    if num_points == 73:
-        current_landmark_mappings = LANDMARK_MAPPINGS_73
-    elif num_points == 43:
-        current_landmark_mappings = LANDMARK_MAPPINGS_43
-    else:
-        print(f"Warning: Unexpected number of landmark points ({num_points}). Using 73-point mapping as default.")
-        current_landmark_mappings = LANDMARK_MAPPINGS_73 # Fallback to 73-point if unexpected
+    # The annotation scheme is a property of each IMAGE, not of the file
+    # (UB-27): every S{n}.csv declares all 73 x/y columns, and profile rows
+    # simply leave indices 43..72 empty. Selecting from the header made the
+    # 43-point mapping unreachable and rasterized profile rows through the
+    # 73-point one, so Boca/Labios/Testa got no points at all (class absent),
+    # Olho direito got a single point (degenerate polygon) and Olho esquerdo
+    # got six points belonging to Labios/Testa (displaced blob).
+    declared = _declared_landmark_columns(df.columns)
 
     for index, row in df.iterrows():
         image_id = row["ID"]
+        n_filled = _count_filled_landmarks(row, declared)
+        current_landmark_mappings = _resolve_landmark_mapping(
+            n_filled, input_csv, image_id
+        )
         polygons[image_id] = {}
 
         for region, indices in current_landmark_mappings.items():
