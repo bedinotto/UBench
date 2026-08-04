@@ -5,12 +5,13 @@ foram auditados a partir do padrão dos próprios resultados (não da leitura
 isolada do código), o que revelou dois defeitos novos (UB-27/UB-29 na
 derivação de máscaras, UB-28 na sonda de VRAM), corrigidos e propagados por
 todo o texto. O trabalho de código e de redação está **fechado e verificado**
-(suíte completa 151 passed / 2 skipped / 0 failed; build da dissertação com 0
-erros, 191 páginas). O que resta são itens que só você pode decidir ou
+(suíte completa 156 passed / 2 skipped / 0 failed; build da dissertação com 0
+erros, 195 páginas). O que resta são itens que só você pode decidir ou
 executar — busca externa, julgamento visual, ou uma decisão de escopo. Cada
 item abaixo tem local exato, o que fazer, e como verificar que funcionou.
 
-Ordem sugerida: **1 → 2 → 3**, os demais são independentes entre si.
+Ordem sugerida: **2 → 3 → 5**; o item 1 virou confirmação opcional, não
+bloqueio. Os demais são independentes entre si.
 
 ---
 
@@ -256,10 +257,12 @@ agora:
 
 ## Resumo executivo (se você só tem 2 minutos)
 
-1. **UB-29 é o único bloqueador real.** Sem a especificação de índices por
-   lado do esquema de 43 marcos (artigo Ashrafi et al. 2022, DOI
-   `10.1016/j.infrared.2022.104209`), a reexecução corrigida não pode
-   acontecer — e inventar os índices fabricaria anotação.
+1. **UB-29 deixou de bloquear.** Com o fato semântico que você forneceu, a
+   regra de lado visível foi derivada da geometria dos marcos, validada por
+   dois sinais independentes e implementada. A reexecução corrigida agora
+   depende só do custo de treinamento (186,9 h), não de informação faltante.
+   Se puder, confirme a convenção contra o artigo Ashrafi et al. 2022 (DOI
+   `10.1016/j.infrared.2022.104209`) — se divergir, ela prevalece.
 2. Escolha visualmente 1 amostra para `cabeca_inclinada` em `data/a4.py` e
    regenere a Figura 6.5 — 15 minutos de trabalho.
 3. Confirme no GitHub que os commits desta sessão realmente chegaram ao
