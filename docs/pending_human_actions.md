@@ -269,3 +269,58 @@ agora:
    remoto — encontrei evidência de que sim, mas não fui eu quem enviou.
 4. Os demais itens (versionar `data/*.py`, 7 `\todo` de busca externa, tabela
    de IoU por dobra) podem esperar; nenhum bloqueia o que já está pronto.
+
+---
+
+## 7. Redução da dissertação para ~100 páginas — em andamento
+
+**Estado: 195 → 154 páginas.** Build limpo em todos os pontos (0 erros, 0
+referências ou citações indefinidas). Faltam ~54 páginas.
+
+### Concluído
+
+- **Apêndices A–E removidos** (−31 págs), com o conteúdo redistribuído: o
+  catálogo de defeitos virou a subseção 5.9.1 da Metodologia (as 23
+  referências foram redirecionadas); as tabelas de D e E foram para
+  Resultados, com duas duplicatas eliminadas; A e C saíram, e seus ponteiros
+  no texto foram reescritos.
+- **Capítulo 7 (Discussão): 24 → 16 páginas**, a meta. O maior ganho veio de
+  remover a prosa que enumerava as quinze ameaças à validade já listadas na
+  tabela, e a tabela de defeitos que duplicava a nova da Metodologia.
+- **Subseção 6.5.1** (a anomalia): 3470 → ~1950 palavras.
+- Seis parágrafos longos do Capítulo 2 reescritos.
+
+### O que falta, por capítulo
+
+| Capítulo | Hoje | Alvo | Falta |
+|---|---|---|---|
+| 1. Introdução | 10 | 6 | −4 |
+| 2. Fundamentação Teórica | 20 | 11 | −9 |
+| 3. Trabalhos Relacionados | 16 | 9 | −7 |
+| 4. Revisão Sistemática | 10 | 5 | −5 |
+| 5. Metodologia | 24 | 14 | −10 |
+| 6. Resultados | 26 | 16 | −10 |
+| 8. Conclusão | 8 | 5 | −3 |
+
+### Onde estão os alvos mais fáceis
+
+- **Cap. 2**: a seção "Segmentação Semântica de Imagens" tem 4001 palavras --
+  metade do capítulo. As subseções de U-Net/UNet++/TransUNet/Swin descrevem
+  arquiteturas que o leitor de um programa de Computação já conhece; podem
+  cair para o essencial que a dissertação de fato usa. As três seções médicas
+  de abertura (febre, história da termometria, medição de temperatura) somam
+  617 palavras e são candidatas naturais a fundir em uma só.
+- **Cap. 4**: dez tabelas de protocolo de RSL (geração de \textit{string},
+  bibliotecas, bases, termos, fases de seleção e extração). Consolidá-las em
+  duas -- uma de protocolo, uma de funil de seleção -- deve render as 5
+  páginas sem perder rastreabilidade.
+- **Cap. 5 e 6**: são os que carregam a contribuição, então o corte deve vir
+  de reescrita de frase, não de remoção de conteúdo. Ambos têm muitos
+  parágrafos acima de 150 palavras.
+
+### Como continuar
+
+Peça a continuação da redução; o trabalho é incremental e cada capítulo pode
+ser feito isoladamente, com `latexmk` verificando ao final que nenhuma
+referência quebrou. Nenhum número, tabela ou figura foi perdido até aqui, e
+esse é o critério a manter.
