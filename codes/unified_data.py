@@ -447,7 +447,8 @@ class ThermalFaceDataset(Dataset):
         # normalization. Single augmentation authority (R5).
         if self.augment:
             self.transform = build_thermal_transform(
-                config.PREPROCESSING.augmentation, seed=config.RANDOM_SEED)
+                config.PREPROCESSING.augmentation, config.REGION_NAMES,
+                seed=config.RANDOM_SEED)
         else:
             self.transform = None
     

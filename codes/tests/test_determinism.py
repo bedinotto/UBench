@@ -113,6 +113,9 @@ def _cfg_with_metadata(tmp_path, subjects=("S1", "S2", "S3")):
     return SimpleNamespace(
         PROCESSED_DIR=proc, DATA_DIR=tmp_path / "data",
         TEST_SUBJECTS=[], K_FOLDS=2, NUM_CLASSES=10, RANDOM_SEED=42,
+        REGION_NAMES=["background", "Contorno inferior do Rosto",
+                      "Sombrancelha esquerda", "Sombrancelha direita", "Nariz",
+                      "Olho esquerdo", "Olho direito", "Boca", "Labios", "Testa"],
         PREPROCESSING=PreprocessingConfig(),
     )
 

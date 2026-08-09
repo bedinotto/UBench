@@ -53,6 +53,9 @@ def _cfg(tmp_path, subjects, test_subjects=(), k_folds: int = 2):
         K_FOLDS=k_folds,
         NUM_CLASSES=10,
         RANDOM_SEED=42,   # loaders build a seeded generator from this (T2.5)
+        REGION_NAMES=["background", "Contorno inferior do Rosto",
+                      "Sombrancelha esquerda", "Sombrancelha direita", "Nariz",
+                      "Olho esquerdo", "Olho direito", "Boca", "Labios", "Testa"],
         PREPROCESSING=PreprocessingConfig(),
     )
 

@@ -118,6 +118,7 @@ def fig_aumento(config, meta: pd.DataFrame) -> None:
     row = meta.iloc[len(meta) // 2]
     img, msk = _load(row, config)
     transform = build_thermal_transform(config.PREPROCESSING.augmentation,
+                                        config.REGION_NAMES,
                                         seed=config.RANDOM_SEED)
     paineis = [("Original", img, msk)]
     for k in range(3):
