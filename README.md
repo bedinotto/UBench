@@ -19,6 +19,12 @@ A comprehensive, production-ready, and fully automated computer vision pipeline 
 
 ## 🧾 Reproducing the reported run
 
+**Archived snapshot:** [10.5281/zenodo.21864556](https://doi.org/10.5281/zenodo.21864556)
+(release `v1.0.0`). That is a *version* DOI — it points permanently at that snapshot, not
+at whatever `main` becomes. The archive holds the versioned tree but **not** the Git LFS
+objects, so the 15 trained checkpoints and the dataset archive are not in it; get those
+from this repository.
+
 > **`main` does not reproduce the dissertation's numbers, by construction.** It carries
 > corrections (UB-27, UB-28, UB-29, UB-30) that change labels and measurements. To
 > reproduce the reported results, use the tag below.
