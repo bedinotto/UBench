@@ -3,11 +3,12 @@
 .vscode
 codes/__pycache__/
 data/
+!data/*.py
+!data/img/
 logs/*
 !logs/2026-07-25_10-55-17/
 outputs/*
 !outputs/2026-07-25_10-55-17/
-
 
 # Checkpoints & error logs (large binary artefacts — kept on disk only)
 outputs/**/checkpoints/
