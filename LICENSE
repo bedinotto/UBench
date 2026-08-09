@@ -18,15 +18,3 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR OTHER DEALINGS IN THE SOFTWARE.
-
----
-
-Scope note. This licence covers the source code, configuration and analysis
-scripts of this repository.
-
-It does NOT cover the Charlotte-ThermalFace dataset, which is third-party data
-obtained from its original authors and is not redistributed here under this
-licence; see the dataset's own terms.
-
-Model weights under outputs/2026-07-25_10-55-17/models/ are derived from that
-dataset and are released for verification of the reported results.

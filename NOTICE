@@ -1,0 +1,33 @@
+UBench — scope of the MIT licence
+=================================
+
+The MIT licence in LICENSE covers the **source code, configuration and
+analysis scripts** of this repository (`codes/`, `data/scripts/`,
+`codes/config.yaml`, the lockfiles under `requirements/`, and the shell entry
+points).
+
+Third-party data
+----------------
+
+It does **not** cover the Charlotte-ThermalFace dataset. That data is
+third-party, obtained from its original authors, and is **not redistributed
+here**. Obtain it from the original authors, under their terms:
+
+    Ashrafi, R. et al. Charlotte-ThermalFace.
+
+The archive under `requirements/` and anything derived into `data/` are
+subject to the dataset's own terms, not to this repository's licence.
+
+Trained model weights
+---------------------
+
+The 15 checkpoints under `outputs/2026-07-25_10-55-17/models/` are derived
+from that dataset. They are published so the reported results can be
+verified without repeating 186.9 h of training. Treat them as derived from
+the dataset, and honour the dataset's terms when reusing them.
+
+Reported run
+------------
+
+The code that produced the reported results is the tag `run-2026-07-25`, not
+`main`. See "Reproducing the reported run" in README.md.
