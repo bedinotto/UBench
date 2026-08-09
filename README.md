@@ -12,7 +12,50 @@ A comprehensive, production-ready, and fully automated computer vision pipeline 
 5. [⚙️ How the Pipeline Works](#%EF%B8%8F-how-the-pipeline-works)
 6. [🎛️ Configuration & CLI Options](#%EF%B8%8F-configuration--cli-options)
 7. [🔍 Verification & Troubleshooting](#-verification--troubleshooting)
-8. [🎉 Version Changelog (v2.0)](#-version-changelog-v20)
+8. [🧾 Reproducing the reported run](#-reproducing-the-reported-run)
+9. [🎉 Version Changelog (v2.0)](#-version-changelog-v20)
+
+---
+
+## 🧾 Reproducing the reported run
+
+> **`main` does not reproduce the dissertation's numbers, by construction.** It carries
+> corrections (UB-27, UB-28, UB-29, UB-30) that change labels and measurements. To
+> reproduce the reported results, use the tag below.
+
+The run behind the dissertation is `run_id` **`2026-07-25_10-55-17`** (3 architectures ×
+5 folds, 186.9 h of GPU). Its code is tagged:
+
+```bash
+git checkout run-2026-07-25          # commit 5a5b4b8
+git apply run_sh_asrun.patch         # the working-tree delta, see below
+uv venv --python 3.11 && source .venv/bin/activate
+uv pip sync requirements/requirements.cuda.lock --torch-backend=cu121
+```
+
+**Two artifacts, not one.** The training was launched from an unconfirmed working tree
+(`run_metadata.json` records `git_dirty: true`), so the tagged commit alone is not the
+full story. The delta is versioned as **`run_sh_asrun.patch`** (committed in `11b64d5`),
+and `running_sha.txt` independently records the same nominal commit.
+
+**The patch does not touch the pipeline.** It changes exactly three files: the editor's
+plugin list (`.claude/settings.json`), the `requires-python` upper bound in
+`pyproject.toml` (metadata, selects no package), and the environment bootstrap in
+`run.sh`. The Git tree object of `codes/` is `885fc55` both at the tagged commit and at
+the commit carrying the patch, and the patch touches no file under `codes/` — so every
+line of data, training, metric, model and configuration code is bit-identical to what is
+published here.
+
+**Environment and configuration** are pinned independently: `lockfile_hash` in
+`logs/2026-07-25_10-55-17/run_metadata.json` is the sha256 of the CUDA lock, and the same
+file records the effective config (seed 42, deterministic, K=5, 100 epochs, `fixed_range`
+normalization, empty `test_subjects`).
+
+**Caveat, stated rather than omitted.** The patch was captured on 2026-07-28, three days
+after the run. `HEAD` did not move in that window, which supports but does not prove that
+the tree was identical at launch. The run is therefore reproducible from *a commit plus a
+recorded, inspectable patch*, not from a bare checkout: the guarantee over the pipeline
+code is cryptographic, the one over the invocation script is documentary.
 
 ---
 
