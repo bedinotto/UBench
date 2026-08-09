@@ -2,9 +2,13 @@
 .DS_Store
 .vscode
 codes/__pycache__/
-data/
-!data/*.py
-!data/img/
+# O conjunto de dados, os .npy processados e os artefatos de análise ficam
+# fora do versionamento. Os scripts de análise, não: eles são a evidência
+# reproduzível dos números da dissertação. Precisa ser `data/*`, e não
+# `data/`, porque o git não desce em um diretório excluído e as negações
+# abaixo não teriam efeito algum.
+data/*
+!data/scripts/
 logs/*
 !logs/2026-07-25_10-55-17/
 outputs/*
